@@ -35,6 +35,13 @@ class EmbeddingConfig:
     device: str = "cuda"
     trust_remote_code: bool = False
 
+    def __post_init__(self):
+        if not isinstance(self.model_name, str):
+            self.model_name = DEFAULT_EMBEDDING_MODEL
+        name = self.model_name.strip()
+        if not name or "\n" in name or len(name) > 200:
+            self.model_name = DEFAULT_EMBEDDING_MODEL
+
 
 # ── Vector Store Configuration ────────────────────────────────────────────────
 

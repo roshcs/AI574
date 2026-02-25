@@ -1,0 +1,45 @@
+name: Sync to Google Drive
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rclone
+        run: curl https://rclone.org/install.sh | sudo bash
+
+      - name: Configure rclone
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<'RCLONE_EOF'
+          [gdrive]
+          type = drive
+          scope = drive
+          service_account_file = /tmp/sa.json
+          RCLONE_EOF
+          echo '${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}' > /tmp/sa.json
+
+      - name: Sync project files
+        run: |
+          rclone copy . gdrive:AI574_Multi_Domain_Agent/project/ \
+            --include "config/**" \
+            --include "foundation/**" \
+            --include "agents/**" \
+            --include "orchestration/**" \
+            --include "rag_core/**" \
+            --include "ingestion/**" \
+            --include "evaluation/**" \
+            --include "notebooks/**" \
+            --include "requirements.txt" \
+            --exclude "__pycache__/**" \
+            --exclude "*.pyc" \
+            --exclude ".git/**" \
+            -v
+
+      - name: Cleanup
+        if: always()
+        run: rm -f /tmp/sa.json

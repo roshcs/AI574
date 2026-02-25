@@ -7,6 +7,7 @@ Adjust for your Colab environment (GPU type, memory, etc.).
 from dataclasses import dataclass, field
 from typing import Optional
 
+DEFAULT_EMBEDDING_MODEL = "thenlper/gte-large"
 
 # ── Model Configuration ──────────────────────────────────────────────────────
 
@@ -27,7 +28,7 @@ class LLMConfig:
 @dataclass
 class EmbeddingConfig:
     """Configuration for the embedding model."""
-    model_name: str = "thenlper/gte-large"
+    model_name: str = DEFAULT_EMBEDDING_MODEL
     dimension: int = 1024
     batch_size: int = 64
     max_seq_length: int = 512

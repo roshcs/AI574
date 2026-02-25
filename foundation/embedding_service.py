@@ -20,7 +20,7 @@ from langchain_core.embeddings import Embeddings
 
 import sys
 sys.path.append("..")
-from config.settings import EmbeddingConfig, CONFIG
+from config.settings import EmbeddingConfig, CONFIG, DEFAULT_EMBEDDING_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +37,43 @@ class EmbeddingService(Embeddings):
         self._model = None
         self._load_model()
 
+    @staticmethod
+    def _validate_model_name(name: str) -> str:
+        """Return a valid HuggingFace model id, falling back to the default."""
+        if not isinstance(name, str) or not name.strip():
+            logger.warning(
+                "model_name is empty or not a string; "
+                f"falling back to default '{DEFAULT_EMBEDDING_MODEL}'"
+            )
+            return DEFAULT_EMBEDDING_MODEL
+
+        stripped = name.strip()
+        config_indicators = ('"architectures"', '"model_type"')
+        looks_like_config = all(ind in stripped for ind in config_indicators)
+        starts_with_config_class = any(
+            stripped.startswith(prefix)
+            for prefix in ("BertConfig", "NewConfig", "RobertaConfig",
+                           "AlbertConfig", "DistilBertConfig", "XLNetConfig")
+        )
+
+        if looks_like_config or starts_with_config_class or "\n" in stripped:
+            logger.warning(
+                "model_name appears to be a serialized config object, not a "
+                f"model id; falling back to default '{DEFAULT_EMBEDDING_MODEL}'"
+            )
+            return DEFAULT_EMBEDDING_MODEL
+
+        return stripped
+
     def _load_model(self):
         """Load the sentence-transformers model."""
         try:
             from sentence_transformers import SentenceTransformer
 
-            logger.info(f"Loading embedding model: {self.config.model_name}")
+            model_name = self._validate_model_name(self.config.model_name)
+            logger.info(f"Loading embedding model: {model_name}")
             self._model = SentenceTransformer(
-                self.config.model_name,
+                model_name,
                 device=self.config.device,
                 trust_remote_code=self.config.trust_remote_code,
             )

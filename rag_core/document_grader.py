@@ -25,6 +25,9 @@ from config.settings import CONFIG
 logger = logging.getLogger(__name__)
 
 
+BATCH_GRADING_CHUNK_SIZE = 3
+
+
 class DocumentGrader:
     """
     Grades retrieved documents for relevance using LLM-as-judge.
@@ -38,6 +41,8 @@ class DocumentGrader:
         """
         self.llm = llm
         self.threshold = CONFIG.rag.relevance_threshold
+        self._batch_fallback_count = 0
+        self._batch_total_count = 0
 
     def grade_single(self, query: str, document: Document) -> dict:
         """
@@ -99,20 +104,25 @@ class DocumentGrader:
             if "error" in result or "grades" not in result:
                 raise ValueError("Batch grader returned no grades")
             raw_grades = result["grades"]
-            if not isinstance(raw_grades, list) or len(raw_grades) != len(documents):
-                raise ValueError(
-                    f"Expected {len(documents)} grades, got {len(raw_grades) if isinstance(raw_grades, list) else 'non-list'}"
+            if not isinstance(raw_grades, list):
+                raise ValueError("Grades field is not a list")
+            if len(raw_grades) < len(documents):
+                logger.warning(
+                    f"Partial batch result: expected {len(documents)} grades, "
+                    f"got {len(raw_grades)}; padding remainder as ambiguous"
                 )
         except Exception as e:
+            self._batch_fallback_count += 1
             logger.warning(f"Batch grading failed ({e}), falling back to per-document grading")
             return self._grade_documents_sequential(query, documents)
 
         buckets = {"relevant": [], "irrelevant": [], "ambiguous": []}
         grades = []
         for i, doc in enumerate(documents):
-            g = raw_grades[i] if i < len(raw_grades) else {}
-            if not isinstance(g, dict):
-                g = {"relevance": "ambiguous", "score": 0.5, "reasoning": "Invalid grade"}
+            if i < len(raw_grades) and isinstance(raw_grades[i], dict):
+                g = raw_grades[i]
+            else:
+                g = {"relevance": "ambiguous", "score": 0.5, "reasoning": "Missing from batch output"}
             relevance = g.get("relevance", "ambiguous")
             if relevance not in CONFIG.rag.grading_labels:
                 relevance = "ambiguous"
@@ -155,16 +165,38 @@ class DocumentGrader:
     ) -> Dict[str, List[Document]]:
         """
         Grade all retrieved documents and bucket them.
-        Uses a single batch LLM call when possible for much faster inference.
-        Returns:
-            {
-                "relevant": [Document, ...],
-                "irrelevant": [Document, ...],
-                "ambiguous": [Document, ...],
-                "grades": [{"doc_index": int, "grade": dict}, ...],
-            }
+
+        Splits large batches into chunks of BATCH_GRADING_CHUNK_SIZE to reduce
+        the likelihood of LLM output truncation, then merges the per-chunk
+        results. Falls back to sequential grading on a per-chunk basis.
         """
-        return self.grade_documents_batch(query, documents)
+        if not documents:
+            return {"relevant": [], "irrelevant": [], "ambiguous": [], "grades": []}
+
+        chunk_size = BATCH_GRADING_CHUNK_SIZE
+        if len(documents) <= chunk_size:
+            return self.grade_documents_batch(query, documents)
+
+        merged: Dict[str, list] = {"relevant": [], "irrelevant": [], "ambiguous": [], "grades": []}
+        for start in range(0, len(documents), chunk_size):
+            chunk = documents[start : start + chunk_size]
+            self._batch_total_count += 1
+            chunk_result = self.grade_documents_batch(query, chunk)
+
+            for label in ("relevant", "irrelevant", "ambiguous"):
+                merged[label].extend(chunk_result[label])
+            for g in chunk_result.get("grades", []):
+                merged["grades"].append({
+                    "doc_index": g["doc_index"] + start,
+                    "grade": g["grade"],
+                })
+
+        logger.info(
+            f"Chunked grading complete: {len(merged['grades'])} docs across "
+            f"{(len(documents) + chunk_size - 1) // chunk_size} chunks "
+            f"(batch fallbacks so far: {self._batch_fallback_count}/{self._batch_total_count})"
+        )
+        return merged
 
     def has_sufficient_context(self, grading_result: dict) -> bool:
         """Check if enough relevant documents were found to generate a response."""

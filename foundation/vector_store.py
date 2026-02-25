@@ -135,12 +135,19 @@ class VectorStoreService:
 
         query_embedding = list(self._embed_query_cached(query))
 
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=k,
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
+        try:
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=k,
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            )
+        except Exception as e:
+            logger.error(f"ChromaDB query failed for domain '{domain}': {e}")
+            return []
+
+        if not results or not results.get("documents") or not results["documents"][0]:
+            return []
 
         documents = []
         for doc_text, metadata, distance in zip(

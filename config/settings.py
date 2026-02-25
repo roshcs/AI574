@@ -2,23 +2,34 @@
 Central configuration for the Multi-Domain Intelligent Assistant.
 All model paths, hyperparameters, and constants live here.
 Adjust for your Colab environment (GPU type, memory, etc.).
+
+Environment-variable overrides (all optional):
+    EMBEDDING_MODEL        — HuggingFace model ID (default: thenlper/gte-large)
+    EMBEDDING_DEVICE       — "cuda" | "cpu"
+    LLM_PRESET             — KerasHub preset name
+    LLM_BACKEND            — "jax" | "torch" | "tensorflow"
+    LLM_MAX_TOKENS         — full-generation budget
+    LLM_SHORT_MAX_TOKENS   — short-generation budget
+    CHROMA_PERSIST_DIR     — ChromaDB persist directory
+    SEARCH_TOP_K           — vector store top-k results
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-DEFAULT_EMBEDDING_MODEL = "thenlper/gte-large"
+DEFAULT_EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "thenlper/gte-large")
 
 # ── Model Configuration ──────────────────────────────────────────────────────
 
 @dataclass
 class LLMConfig:
     """Configuration for the primary language model."""
-    preset: str = "gemma3_instruct_12b"             # KerasHub preset (~24GB bfloat16, fits A100 80GB)
-    backend: str = "jax"                             # jax | torch | tensorflow
+    preset: str = os.getenv("LLM_PRESET", "gemma3_instruct_12b")
+    backend: str = os.getenv("LLM_BACKEND", "jax")
     dtype: str = "bfloat16"                          # bfloat16 for A100/L4
-    max_new_tokens: int = 1024                       # full-generation budget (answers)
-    short_max_new_tokens: int = 512                  # budget for routing, grading, hallucination checks
+    max_new_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "1024"))
+    short_max_new_tokens: int = int(os.getenv("LLM_SHORT_MAX_TOKENS", "512"))
     temperature: float = 0.7
     top_k: int = 50
     top_p: float = 0.9
@@ -32,7 +43,7 @@ class EmbeddingConfig:
     dimension: int = 1024
     batch_size: int = 64
     max_seq_length: int = 512
-    device: str = "cuda"
+    device: str = os.getenv("EMBEDDING_DEVICE", "cuda")
     trust_remote_code: bool = False
 
     def __post_init__(self):
@@ -48,13 +59,13 @@ class EmbeddingConfig:
 @dataclass
 class VectorStoreConfig:
     """Configuration for ChromaDB vector store."""
-    persist_directory: str = "./chroma_db"
+    persist_directory: str = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
     collections: dict = field(default_factory=lambda: {
         "industrial": "industrial_knowledge",
         "recipe": "recipe_knowledge",
         "scientific": "scientific_knowledge",
     })
-    search_top_k: int = 5
+    search_top_k: int = int(os.getenv("SEARCH_TOP_K", "5"))
     similarity_metric: str = "cosine"                # cosine | l2 | ip
 
 

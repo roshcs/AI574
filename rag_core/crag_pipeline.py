@@ -98,9 +98,15 @@ class CRAGPipeline:
         Returns:
             CRAGResult with response, sources, and pipeline metadata.
         """
+        if not query or not query.strip():
+            logger.warning("Empty query received, escalating immediately")
+            result = CRAGResult(domain=domain)
+            return self._escalate(result, "Empty or whitespace-only query")
+
         result = CRAGResult(domain=domain)
         current_query = query
         result.query_history.append(current_query)
+        context_docs: list[Document] = []
 
         for attempt in range(1, self.max_attempts + 1):
             result.attempts = attempt
@@ -183,11 +189,16 @@ class CRAGPipeline:
             return self._escalate(result, "Max attempts exhausted")
 
         # ── Step 4: Generate ──────────────────────────────────────────
-        t0 = time.perf_counter()
-        generation = self.generator.generate(query, context_docs, domain)
-        result.timing_breakdown["generate_s"] = time.perf_counter() - t0
-        result.response = generation["response"]
-        result.sources = generation["sources"]
+        try:
+            t0 = time.perf_counter()
+            generation = self.generator.generate(query, context_docs, domain)
+            result.timing_breakdown["generate_s"] = time.perf_counter() - t0
+            result.response = generation["response"]
+            result.sources = generation["sources"]
+        except Exception as e:
+            logger.error(f"Generation failed: {e}")
+            result.timing_breakdown["generate_s"] = time.perf_counter() - t0
+            return self._escalate(result, f"Response generation failed: {e}")
 
         # ── Step 5: Validate (optional; skip for faster inference) ─────
         if CONFIG.rag.skip_hallucination_check:
@@ -196,24 +207,30 @@ class CRAGPipeline:
             result.timing_breakdown["validate_s"] = 0.0
             logger.info("Hallucination check skipped (skip_hallucination_check=True)")
         else:
-            t0 = time.perf_counter()
-            validation = self.checker.check(result.response, context_docs)
-            result.timing_breakdown["validate_s"] = time.perf_counter() - t0
-            result.grounded = validation["grounded"]
-            result.confidence = validation["confidence"]
-            if validation["should_escalate"]:
-                logger.warning(
-                    f"Hallucination detected: {validation['issues']}"
-                )
-                result.escalated = True
-                result.escalation_reason = (
-                    f"Response may not be fully grounded. "
-                    f"Issues: {validation['issues']}"
-                )
-            else:
-                logger.info(
-                    f"Response validated (confidence={result.confidence:.2f})"
-                )
+            try:
+                t0 = time.perf_counter()
+                validation = self.checker.check(result.response, context_docs)
+                result.timing_breakdown["validate_s"] = time.perf_counter() - t0
+                result.grounded = validation["grounded"]
+                result.confidence = validation["confidence"]
+                if validation["should_escalate"]:
+                    logger.warning(
+                        f"Hallucination detected: {validation['issues']}"
+                    )
+                    result.escalated = True
+                    result.escalation_reason = (
+                        f"Response may not be fully grounded. "
+                        f"Issues: {validation['issues']}"
+                    )
+                else:
+                    logger.info(
+                        f"Response validated (confidence={result.confidence:.2f})"
+                    )
+            except Exception as e:
+                logger.error(f"Hallucination check failed: {e}")
+                result.timing_breakdown["validate_s"] = time.perf_counter() - t0
+                result.grounded = False
+                result.confidence = 0.5
 
         result.timing_breakdown["total_s"] = (
             result.timing_breakdown.get("retrieve_s", 0)
@@ -239,9 +256,16 @@ class CRAGPipeline:
         self, query: str, domain: str, failure_context: str
     ) -> str:
         """Rewrite query for the next retrieval attempt."""
-        new_query = self.rewriter.rewrite(query, domain, failure_context)
-        logger.info(f"Rewritten: '{query[:50]}' → '{new_query[:50]}'")
-        return new_query
+        try:
+            new_query = self.rewriter.rewrite(query, domain, failure_context)
+            if not new_query or not new_query.strip():
+                logger.warning("Rewriter returned empty query, keeping original")
+                return query
+            logger.info(f"Rewritten: '{query[:50]}' → '{new_query[:50]}'")
+            return new_query
+        except Exception as e:
+            logger.error(f"Query rewrite failed: {e}; keeping original query")
+            return query
 
     @staticmethod
     def _escalate(result: CRAGResult, reason: str) -> CRAGResult:

@@ -51,6 +51,10 @@ class Retriever:
         Returns:
             List of Documents with similarity_score in metadata.
         """
+        if not query or not query.strip():
+            logger.warning("Empty query passed to retriever, returning no results")
+            return []
+
         k = k or CONFIG.vector_store.search_top_k
 
         logger.info(f"Retrieving top-{k} from '{domain}' for: {query[:80]}...")

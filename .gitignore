@@ -1,1 +1,30 @@
 project-d5c16c76-3acd-461f-b06-b99a9f43ca4d.json
+
+# ── Secrets & credentials ────────────────────────────────────────────────────
+*.json.bak
+**/service-account*.json
+**/credentials*.json
+**/*secret*
+.env
+.env.*
+
+# ── Python artifacts ─────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# ── Data & vector store ──────────────────────────────────────────────────────
+chroma_db/
+*.db
+*.sqlite3
+
+# ── Notebook outputs ─────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── IDE / OS ─────────────────────────────────────────────────────────────────
+.DS_Store
+.vscode/
+.idea/

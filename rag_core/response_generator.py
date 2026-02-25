@@ -98,12 +98,23 @@ class ResponseGenerator:
         }
 
     @staticmethod
-    def _format_context(documents: List[Document]) -> str:
-        """Format documents into a numbered context string."""
+    def _format_context(
+        documents: List[Document],
+        max_total_chars: int = 12_000,
+    ) -> str:
+        """Format documents into a numbered context string, truncating to budget."""
         parts = []
+        total = 0
+        per_doc_budget = max(500, max_total_chars // max(len(documents), 1))
         for i, doc in enumerate(documents, 1):
             source = doc.metadata.get("source", "unknown")
-            parts.append(f"[Document {i} | Source: {source}]\n{doc.page_content}")
+            content = doc.page_content[:per_doc_budget]
+            part = f"[Document {i} | Source: {source}]\n{content}"
+            total += len(part)
+            parts.append(part)
+            if total >= max_total_chars:
+                logger.info(f"Context budget reached at document {i}/{len(documents)}")
+                break
         return "\n\n---\n\n".join(parts)
 
     @staticmethod

@@ -18,7 +18,7 @@ class LLMConfig:
     backend: str = "jax"                             # jax | torch | tensorflow
     dtype: str = "bfloat16"                          # bfloat16 for A100/L4
     max_new_tokens: int = 1024                       # full-generation budget (answers)
-    short_max_new_tokens: int = 256                  # budget for routing, grading, hallucination checks
+    short_max_new_tokens: int = 512                  # budget for routing, grading, hallucination checks
     temperature: float = 0.7
     top_k: int = 50
     top_p: float = 0.9

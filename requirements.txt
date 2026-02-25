@@ -1,0 +1,23 @@
+# ── Core Frameworks ───────────────────────────────────────────────────────────
+langchain>=0.3.0
+langchain-core>=0.3.0
+langgraph>=0.2.0
+
+# ── Model & Embedding ────────────────────────────────────────────────────────
+keras>=3.0
+keras-hub>=0.17.0
+jax[cuda12]                      # JAX with CUDA for Colab GPU
+sentence-transformers>=3.0.0
+
+# ── Vector Store ──────────────────────────────────────────────────────────────
+chromadb>=0.5.0
+
+# ── Data Loading ──────────────────────────────────────────────────────────────
+PyPDF2>=3.0.0
+arxiv>=2.1.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+pydantic>=2.0
+
+# ── Optional: Web Search Fallback ─────────────────────────────────────────────
+# tavily-python>=0.3.0           # Uncomment if using Tavily search fallback

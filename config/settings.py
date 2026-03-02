@@ -29,7 +29,7 @@ class LLMConfig:
     backend: str = os.getenv("LLM_BACKEND", "jax")
     dtype: str = "bfloat16"                          # bfloat16 for A100/L4
     max_new_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "1024"))
-    short_max_new_tokens: int = int(os.getenv("LLM_SHORT_MAX_TOKENS", "512"))
+    short_max_new_tokens: int = int(os.getenv("LLM_SHORT_MAX_TOKENS", "150"))
     temperature: float = 0.7
     top_k: int = 50
     top_p: float = 0.9

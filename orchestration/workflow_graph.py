@@ -37,6 +37,42 @@ from config.settings import CONFIG
 logger = logging.getLogger(__name__)
 
 
+# ── Run Profiles ──────────────────────────────────────────────────────────────
+# "best_quality" uses CONFIG defaults; "fast_interactive" trades quality for speed.
+
+RUN_PROFILES: Dict[str, Dict] = {
+    "best_quality": {
+        "k": None,
+        "max_rewrite_attempts": None,
+        "skip_hallucination_check": None,
+        "generate_max_new_tokens": None,
+    },
+    "fast_interactive": {
+        "k": 3,
+        "max_rewrite_attempts": 0,
+        "skip_hallucination_check": True,
+        "generate_max_new_tokens": 256,
+    },
+}
+
+_RUNTIME_OPTION_KEYS = frozenset(RUN_PROFILES["best_quality"].keys())
+
+
+def _resolve_run_options(mode: str, options: Optional[Dict] = None) -> Dict:
+    """Merge a named profile with optional per-call overrides."""
+    if mode not in RUN_PROFILES:
+        raise ValueError(
+            f"Unknown run mode '{mode}'. Choose from: {sorted(RUN_PROFILES)}"
+        )
+    merged = dict(RUN_PROFILES[mode])
+    if options:
+        unknown = set(options) - _RUNTIME_OPTION_KEYS
+        if unknown:
+            logger.warning("Ignoring unknown runtime options: %s", unknown)
+        merged.update({k: v for k, v in options.items() if k in _RUNTIME_OPTION_KEYS})
+    return {k: v for k, v in merged.items() if v is not None}
+
+
 def _import_class(dotted_path: str):
     """Import a class from a dotted path like 'agents.industrial_agent.IndustrialAgent'."""
     module_path, class_name = dotted_path.rsplit(".", 1)
@@ -72,8 +108,10 @@ def _make_agent_node(agent, domain_name: str):
         query = state["user_query"]
         state["status"] = "processing"
 
+        runtime_opts = state.get("runtime_options") or {}
+
         t0 = time.perf_counter()
-        result = agent.handle(query)
+        result = agent.handle(query, **runtime_opts)
         elapsed = time.perf_counter() - t0
         state["timing_agent_s"] = elapsed
         state["timing_crag_breakdown"] = getattr(result, "timing_breakdown", {})
@@ -228,9 +266,25 @@ def build_workflow(
 
 # ── Convenience Runner ────────────────────────────────────────────────────────
 
-def run_query(workflow, query: str, history=None) -> Dict:
+def run_query(
+    workflow,
+    query: str,
+    history=None,
+    mode: str = "best_quality",
+    options: Optional[Dict] = None,
+) -> Dict:
     """
     Run a query through the full workflow and return results.
+
+    Args:
+        workflow: Compiled LangGraph workflow.
+        query: User query string.
+        history: Optional conversation history.
+        mode: Run profile — ``"best_quality"`` (default) or
+              ``"fast_interactive"``.  See ``RUN_PROFILES``.
+        options: Per-call overrides merged on top of the selected profile.
+                 Supported keys: ``k``, ``max_rewrite_attempts``,
+                 ``skip_hallucination_check``, ``generate_max_new_tokens``.
 
     Returns:
         {
@@ -240,11 +294,16 @@ def run_query(workflow, query: str, history=None) -> Dict:
             "sources": list,
             "escalated": bool,
             "needs_clarification": bool,
+            "mode": str,
+            "runtime_options": dict,
             "timing": { "total_s", "supervisor_s", "agent_s", "crag": {...} },
         }
     """
+    runtime_options = _resolve_run_options(mode, options)
+    logger.info("run_query mode=%s  resolved_options=%s", mode, runtime_options)
+
     t0 = time.perf_counter()
-    initial_state = create_initial_state(query, history)
+    initial_state = create_initial_state(query, history, runtime_options=runtime_options)
     final_state = workflow.invoke(initial_state)
     total_s = time.perf_counter() - t0
 
@@ -274,5 +333,7 @@ def run_query(workflow, query: str, history=None) -> Dict:
         "escalated": final_state.get("escalated", False),
         "needs_clarification": final_state.get("needs_clarification", False),
         "status": final_state.get("status", "unknown"),
+        "mode": mode,
+        "runtime_options": runtime_options,
         "timing": timing,
     }

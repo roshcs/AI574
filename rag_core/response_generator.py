@@ -13,7 +13,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import List, Optional
 
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -50,6 +50,7 @@ class ResponseGenerator:
         query: str,
         documents: List[Document],
         domain: str,
+        max_new_tokens: Optional[int] = None,
     ) -> dict:
         """
         Generate a response grounded in the provided documents.
@@ -58,6 +59,7 @@ class ResponseGenerator:
             query: User's original query.
             documents: Relevant documents from retrieval.
             domain: Target domain for prompt selection.
+            max_new_tokens: Override the model's default generation budget.
 
         Returns:
             {
@@ -80,8 +82,12 @@ class ResponseGenerator:
 
         prompt = prompt_template.format(context=context, query=query)
 
+        invoke_kwargs: dict = {}
+        if max_new_tokens is not None:
+            invoke_kwargs["max_new_tokens"] = max_new_tokens
+
         try:
-            result = self.llm.invoke([HumanMessage(content=prompt)])
+            result = self.llm.invoke([HumanMessage(content=prompt)], **invoke_kwargs)
             response_text = result.content.strip()
         except Exception as e:
             logger.error(f"Generation failed: {e}")

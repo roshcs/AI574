@@ -56,8 +56,15 @@ class AgentState(TypedDict, total=False):
     timing_clarify_s: float                  # Clarification generation time
     timing_crag_breakdown: Dict              # Per-step CRAG timing
 
+    # ── Runtime Options ───────────────────────────────────────────────
+    runtime_options: Dict                    # Per-request overrides (k, skip_hallucination_check, …)
 
-def create_initial_state(query: str, history: Optional[List[BaseMessage]] = None) -> AgentState:
+
+def create_initial_state(
+    query: str,
+    history: Optional[List[BaseMessage]] = None,
+    runtime_options: Optional[Dict] = None,
+) -> AgentState:
     """Create a fresh state for a new query."""
     return AgentState(
         user_query=query,
@@ -79,4 +86,5 @@ def create_initial_state(query: str, history: Optional[List[BaseMessage]] = None
         clarification_message="",
         final_response="",
         status="routing",
+        runtime_options=runtime_options or {},
     )

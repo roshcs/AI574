@@ -86,6 +86,9 @@ class CRAGPipeline:
         query: str,
         domain: str,
         k: Optional[int] = None,
+        max_rewrite_attempts: Optional[int] = None,
+        skip_hallucination_check: Optional[bool] = None,
+        generate_max_new_tokens: Optional[int] = None,
     ) -> CRAGResult:
         """
         Execute the full CRAG loop.
@@ -94,6 +97,9 @@ class CRAGPipeline:
             query: User query (or already rewritten query).
             domain: Target domain for retrieval.
             k: Number of documents to retrieve per attempt.
+            max_rewrite_attempts: Per-call override (None = use config default).
+            skip_hallucination_check: Per-call override (None = use config default).
+            generate_max_new_tokens: Cap on generation tokens (None = model default).
 
         Returns:
             CRAGResult with response, sources, and pipeline metadata.
@@ -103,15 +109,20 @@ class CRAGPipeline:
             result = CRAGResult(domain=domain)
             return self._escalate(result, "Empty or whitespace-only query")
 
+        if max_rewrite_attempts is not None:
+            max_attempts = max_rewrite_attempts + 1
+        else:
+            max_attempts = self.max_attempts
+
         result = CRAGResult(domain=domain)
         current_query = query
         result.query_history.append(current_query)
         context_docs: list[Document] = []
 
-        for attempt in range(1, self.max_attempts + 1):
+        for attempt in range(1, max_attempts + 1):
             result.attempts = attempt
             attempt_timing: dict = {}
-            logger.info(f"CRAG attempt {attempt}/{self.max_attempts} | "
+            logger.info(f"CRAG attempt {attempt}/{max_attempts} | "
                         f"Query: {current_query[:80]}")
 
             # ── Step 1: Retrieve ──────────────────────────────────────
@@ -123,7 +134,7 @@ class CRAGPipeline:
 
             if not retrieved_docs:
                 logger.warning("No documents retrieved at all")
-                if attempt < self.max_attempts:
+                if attempt < max_attempts:
                     t0 = time.perf_counter()
                     current_query = self._rewrite_and_retry(
                         current_query, domain, "No documents returned"
@@ -162,7 +173,7 @@ class CRAGPipeline:
                 break
             else:
                 logger.info("Insufficient relevant documents")
-                if attempt < self.max_attempts:
+                if attempt < max_attempts:
                     failure_context = (
                         f"Retrieved {len(retrieved_docs)} docs but "
                         f"{len(grading['irrelevant'])} were irrelevant. "
@@ -183,7 +194,7 @@ class CRAGPipeline:
                     return self._escalate(
                         result,
                         "Could not find relevant documents after "
-                        f"{self.max_attempts} attempts"
+                        f"{max_attempts} attempts"
                     )
         else:
             return self._escalate(result, "Max attempts exhausted")
@@ -191,7 +202,10 @@ class CRAGPipeline:
         # ── Step 4: Generate ──────────────────────────────────────────
         try:
             t0 = time.perf_counter()
-            generation = self.generator.generate(query, context_docs, domain)
+            generation = self.generator.generate(
+                query, context_docs, domain,
+                max_new_tokens=generate_max_new_tokens,
+            )
             result.timing_breakdown["generate_s"] = time.perf_counter() - t0
             result.response = generation["response"]
             result.sources = generation["sources"]
@@ -201,7 +215,8 @@ class CRAGPipeline:
             return self._escalate(result, f"Response generation failed: {e}")
 
         # ── Step 5: Validate (optional; skip for faster inference) ─────
-        if CONFIG.rag.skip_hallucination_check:
+        do_skip = skip_hallucination_check if skip_hallucination_check is not None else CONFIG.rag.skip_hallucination_check
+        if do_skip:
             result.grounded = True
             result.confidence = 1.0
             result.timing_breakdown["validate_s"] = 0.0

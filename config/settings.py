@@ -12,6 +12,8 @@ Environment-variable overrides (all optional):
     LLM_SHORT_MAX_TOKENS   — short-generation budget
     CHROMA_PERSIST_DIR     — ChromaDB persist directory
     SEARCH_TOP_K           — vector store top-k results
+    DEFAULT_MODEL_ID       — runtime model used by run_query when model_id
+                             is omitted (default: gemini_flash)
 """
 
 import os
@@ -19,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 DEFAULT_EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "thenlper/gte-large")
+DEFAULT_MODEL_ID = os.getenv("DEFAULT_MODEL_ID", "gemini_flash")
 
 # ── Model Configuration ──────────────────────────────────────────────────────
 

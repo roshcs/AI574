@@ -15,10 +15,12 @@ into a complete executable workflow.
 Usage:
     from orchestration.workflow_graph import build_workflow, run_query
     workflow = build_workflow(llm, vector_store, index_builder)
+
+    # Default uses gemini_flash (configurable via DEFAULT_MODEL_ID):
     result = run_query(workflow, "My PLC is showing fault F0003")
 
-    # Runtime model selection:
-    result = run_query(workflow, "...", model_id="gemini_flash")
+    # Explicit model override:
+    result = run_query(workflow, "...", model_id="groq_llama")
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ from orchestration.supervisor import SupervisorAgent
 from rag_core.crag_pipeline import CRAGPipeline
 from foundation.vector_store import VectorStoreService
 from ingestion.index_builder import IndexBuilder
-from config.settings import CONFIG
+from config.settings import CONFIG, DEFAULT_MODEL_ID
 
 logger = logging.getLogger(__name__)
 
@@ -337,8 +339,9 @@ def run_query(
                  Supported keys: ``k``, ``max_rewrite_attempts``,
                  ``skip_hallucination_check``, ``generate_max_new_tokens``.
         model_id: Optional model identifier (e.g. ``"gemini_flash"``,
-                  ``"groq_llama"``).  When omitted the workflow's original
-                  LLM is used.  See ``foundation.model_registry.list_models()``.
+                  ``"groq_llama"``).  When omitted, defaults to
+                  ``DEFAULT_MODEL_ID`` from config (``"gemini_flash"``).
+                  See ``foundation.model_registry.list_models()``.
 
     Returns:
         {
@@ -354,12 +357,14 @@ def run_query(
             "timing": { "total_s", "supervisor_s", "agent_s", "crag": {...} },
         }
     """
+    effective_model_id = model_id if model_id is not None else DEFAULT_MODEL_ID
+
     runtime_options = _resolve_run_options(mode, options)
-    effective_wf = _resolve_workflow(workflow, model_id)
+    effective_wf = _resolve_workflow(workflow, effective_model_id)
 
     logger.info(
-        "run_query mode=%s  model_id=%s  resolved_options=%s",
-        mode, model_id, runtime_options,
+        "run_query mode=%s  model_id=%s (resolved=%s)  resolved_options=%s",
+        mode, model_id, effective_model_id, runtime_options,
     )
 
     t0 = time.perf_counter()
@@ -394,7 +399,7 @@ def run_query(
         "needs_clarification": final_state.get("needs_clarification", False),
         "status": final_state.get("status", "unknown"),
         "mode": mode,
-        "model_id": model_id,
+        "model_id": effective_model_id,
         "runtime_options": runtime_options,
         "timing": timing,
     }

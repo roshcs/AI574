@@ -74,20 +74,40 @@ class HostedChatModelAdapter:
     This makes hosted models (Gemini, Groq, …) compatible with the
     supervisor, document grader, and hallucination checker which all
     call ``llm.invoke_and_parse_json(messages)``.
+
+    Automatically translates ``max_new_tokens`` to the provider-specific
+    parameter name so callers don't need to care about provider differences.
     """
+
+    _TOKEN_KWARG_MAP: Dict[str, str] = {
+        "chat-google-generative-ai": "max_output_tokens",
+        "groq-chat": "max_tokens",
+    }
 
     def __init__(self, model: BaseChatModel):
         self._model = model
+
+    def _translate_kwargs(self, kwargs: dict) -> dict:
+        """Map generic ``max_new_tokens`` to the provider's expected key."""
+        if "max_new_tokens" not in kwargs:
+            return kwargs
+        budget = kwargs.pop("max_new_tokens")
+        provider_type = getattr(self._model, "_llm_type", "")
+        target_key = self._TOKEN_KWARG_MAP.get(provider_type, "max_tokens")
+        kwargs[target_key] = budget
+        return kwargs
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._model, name)
 
     def invoke(self, messages, **kwargs):
+        kwargs = self._translate_kwargs(kwargs)
         return self._model.invoke(messages, **kwargs)
 
     def invoke_and_parse_json(
         self, messages: List[BaseMessage], **kwargs
     ) -> dict:
+        kwargs = self._translate_kwargs(kwargs)
         result = self._model.invoke(messages, **kwargs)
         return _parse_llm_json(result.content.strip())
 
@@ -120,7 +140,7 @@ def _make_gemini_flash(**kwargs) -> HostedChatModelAdapter:
             "GOOGLE_API_KEY env var (or api_key kwarg) is required for Gemini."
         )
     model = ChatGoogleGenerativeAI(
-        model=kwargs.get("model_name", "gemini-1.5-flash"),
+        model=kwargs.get("model_name", "gemini-2.0-flash"),
         google_api_key=api_key,
         temperature=kwargs.get("temperature", 0.7),
     )
@@ -128,7 +148,7 @@ def _make_gemini_flash(**kwargs) -> HostedChatModelAdapter:
 
 
 def _make_gemini_pro(**kwargs) -> HostedChatModelAdapter:
-    return _make_gemini_flash(model_name="gemini-1.5-pro", **kwargs)
+    return _make_gemini_flash(model_name="gemini-2.5-pro", **kwargs)
 
 
 def _make_groq_llama(**kwargs) -> HostedChatModelAdapter:

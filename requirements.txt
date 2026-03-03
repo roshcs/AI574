@@ -21,7 +21,7 @@ pydantic>=2.0,<3.0
 
 # ── Optional: Hosted LLM Providers ───────────────────────────────────────────
 # Uncomment the providers you want to use with model_id in run_query()
-# langchain-google-genai>=2.0.0  # model_id="gemini_flash" / "gemini_pro"
+langchain-google-genai>=2.0.0  # model_id="gemini_flash" / "gemini_pro"
 # langchain-groq>=0.2.0          # model_id="groq_llama"
 
 # ── Optional: Web Search Fallback ─────────────────────────────────────────────

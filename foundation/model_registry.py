@@ -140,7 +140,7 @@ def _make_gemini_flash(**kwargs) -> HostedChatModelAdapter:
             "GOOGLE_API_KEY env var (or api_key kwarg) is required for Gemini."
         )
     model = ChatGoogleGenerativeAI(
-        model=kwargs.get("model_name", "gemini-2.0-flash"),
+        model=kwargs.get("model_name", "gemini-2.5-flash"),
         google_api_key=api_key,
         temperature=kwargs.get("temperature", 0.7),
     )

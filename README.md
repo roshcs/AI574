@@ -125,11 +125,11 @@ print(result["response"])
 
 ## Runtime Model Selection
 
-By default, `run_query` uses `gemini_flash` (Gemini 2.0 Flash) which requires
+By default, `run_query` uses `gemini_flash` (Gemini 2.5 Flash) which requires
 `GOOGLE_API_KEY` to be set. You can switch to any registered model at query time:
 
 ```python
-# Default: uses gemini_flash (Gemini 2.0 Flash, requires GOOGLE_API_KEY)
+# Default: uses gemini_flash (Gemini 2.5 Flash, requires GOOGLE_API_KEY)
 result = run_query(workflow, "Fault F004 on my drive")
 
 # Use local Gemma 3 12B (requires GPU + Kaggle credentials)
@@ -146,7 +146,7 @@ Available model IDs:
 
 | `model_id` | Provider | Model | Requires |
 |---|---|---|---|
-| `gemini_flash` | Google | Gemini 2.0 Flash | `GOOGLE_API_KEY` (default) |
+| `gemini_flash` | Google | Gemini 2.5 Flash | `GOOGLE_API_KEY` (default) |
 | `gemini_pro` | Google | Gemini 2.5 Pro | `GOOGLE_API_KEY` |
 | `gemma3` | Local (KerasHub) | Gemma 3 12B | GPU + Kaggle credentials |
 | `groq_llama` | Groq | Llama 3.1 8B Instant | `GROQ_API_KEY` |

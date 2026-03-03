@@ -16,6 +16,9 @@ Usage:
     from orchestration.workflow_graph import build_workflow, run_query
     workflow = build_workflow(llm, vector_store, index_builder)
     result = run_query(workflow, "My PLC is showing fault F0003")
+
+    # Runtime model selection:
+    result = run_query(workflow, "...", model_id="gemini_flash")
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ from __future__ import annotations
 import importlib
 import logging
 import time
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from langgraph.graph import END, StateGraph
 
@@ -35,6 +38,9 @@ from ingestion.index_builder import IndexBuilder
 from config.settings import CONFIG
 
 logger = logging.getLogger(__name__)
+
+# ── Workflow Cache (keyed by model_id) ────────────────────────────────────────
+_workflow_cache: Dict[str, Any] = {}
 
 
 # ── Run Profiles ──────────────────────────────────────────────────────────────
@@ -260,8 +266,52 @@ def build_workflow(
 
     # Compile
     compiled = graph.compile()
+
+    # Stash references so run_query can rebuild for a different model_id
+    compiled._ai574_vector_store = vector_store
+    compiled._ai574_index_builder = index_builder
+
     logger.info("Workflow graph compiled successfully")
     return compiled
+
+
+# ── Workflow Resolution ────────────────────────────────────────────────────────
+
+def _resolve_workflow(
+    workflow,
+    model_id: Optional[str],
+) -> Any:
+    """Return the workflow to invoke, building & caching if *model_id* differs.
+
+    If *model_id* is ``None`` the original (default) workflow is returned
+    unmodified.  Otherwise a workflow compiled with the requested LLM is
+    retrieved from cache or built on the fly.
+    """
+    if model_id is None:
+        return workflow
+
+    if model_id in _workflow_cache:
+        logger.info("Reusing cached workflow for model_id='%s'", model_id)
+        return _workflow_cache[model_id]
+
+    from foundation.model_registry import get_llm
+
+    llm = get_llm(model_id)
+
+    vector_store = getattr(workflow, "_ai574_vector_store", None)
+    index_builder = getattr(workflow, "_ai574_index_builder", None)
+
+    if vector_store is None:
+        raise RuntimeError(
+            "Cannot rebuild workflow for a different model_id because the "
+            "original workflow has no attached vector_store.  Make sure "
+            "build_workflow() was used to create the workflow."
+        )
+
+    new_wf = build_workflow(llm, vector_store, index_builder)
+    _workflow_cache[model_id] = new_wf
+    logger.info("Built and cached workflow for model_id='%s'", model_id)
+    return new_wf
 
 
 # ── Convenience Runner ────────────────────────────────────────────────────────
@@ -272,12 +322,13 @@ def run_query(
     history=None,
     mode: str = "best_quality",
     options: Optional[Dict] = None,
+    model_id: Optional[str] = None,
 ) -> Dict:
     """
     Run a query through the full workflow and return results.
 
     Args:
-        workflow: Compiled LangGraph workflow.
+        workflow: Compiled LangGraph workflow (from ``build_workflow``).
         query: User query string.
         history: Optional conversation history.
         mode: Run profile — ``"best_quality"`` (default) or
@@ -285,6 +336,9 @@ def run_query(
         options: Per-call overrides merged on top of the selected profile.
                  Supported keys: ``k``, ``max_rewrite_attempts``,
                  ``skip_hallucination_check``, ``generate_max_new_tokens``.
+        model_id: Optional model identifier (e.g. ``"gemini_flash"``,
+                  ``"groq_llama"``).  When omitted the workflow's original
+                  LLM is used.  See ``foundation.model_registry.list_models()``.
 
     Returns:
         {
@@ -295,16 +349,22 @@ def run_query(
             "escalated": bool,
             "needs_clarification": bool,
             "mode": str,
+            "model_id": str | None,
             "runtime_options": dict,
             "timing": { "total_s", "supervisor_s", "agent_s", "crag": {...} },
         }
     """
     runtime_options = _resolve_run_options(mode, options)
-    logger.info("run_query mode=%s  resolved_options=%s", mode, runtime_options)
+    effective_wf = _resolve_workflow(workflow, model_id)
+
+    logger.info(
+        "run_query mode=%s  model_id=%s  resolved_options=%s",
+        mode, model_id, runtime_options,
+    )
 
     t0 = time.perf_counter()
     initial_state = create_initial_state(query, history, runtime_options=runtime_options)
-    final_state = workflow.invoke(initial_state)
+    final_state = effective_wf.invoke(initial_state)
     total_s = time.perf_counter() - t0
 
     crag = final_state.get("timing_crag_breakdown") or {}
@@ -334,6 +394,7 @@ def run_query(
         "needs_clarification": final_state.get("needs_clarification", False),
         "status": final_state.get("status", "unknown"),
         "mode": mode,
+        "model_id": model_id,
         "runtime_options": runtime_options,
         "timing": timing,
     }

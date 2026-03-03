@@ -72,6 +72,8 @@ Settings live in `config/settings.py` and can be overridden with environment var
 - `LLM_MAX_TOKENS`, `LLM_SHORT_MAX_TOKENS`
 - `CHROMA_PERSIST_DIR` (default: `./chroma_db`)
 - `SEARCH_TOP_K`
+- `GOOGLE_API_KEY` (for Gemini models via `model_id="gemini_flash"`)
+- `GROQ_API_KEY` (for Groq models via `model_id="groq_llama"`)
 
 Example:
 
@@ -114,6 +116,44 @@ print(result["domain"])
 print(result["confidence"])
 print(result["response"])
 print(result["sources"])
+
+# 4) Runtime model selection — use a hosted LLM instead of the local Gemma model
+result = run_query(workflow, "My S7-1200 PLC shows fault F0003", model_id="gemini_flash")
+print(result["response"])
+```
+
+## Runtime Model Selection
+
+You can switch the LLM at query time via the `model_id` parameter — no need to rebuild the workflow manually:
+
+```python
+# Default: uses the local KerasHub model (Gemma 3 12B)
+result = run_query(workflow, "Fault F004 on my drive")
+
+# Use Google Gemini Flash (requires GOOGLE_API_KEY)
+result = run_query(workflow, "Fault F004 on my drive", model_id="gemini_flash")
+
+# Use Groq (Llama 3.1 8B) for fast inference (requires GROQ_API_KEY)
+result = run_query(workflow, "Fault F004 on my drive", model_id="groq_llama")
+
+# Combine with run modes
+result = run_query(workflow, "Fault F004", model_id="gemini_flash", mode="fast_interactive")
+```
+
+Available model IDs:
+
+| `model_id` | Provider | Model | Requires |
+|---|---|---|---|
+| `gemma3` | Local (KerasHub) | Gemma 3 12B | GPU + Kaggle credentials |
+| `gemini_flash` | Google | Gemini 1.5 Flash | `GOOGLE_API_KEY` |
+| `gemini_pro` | Google | Gemini 1.5 Pro | `GOOGLE_API_KEY` |
+| `groq_llama` | Groq | Llama 3.1 8B Instant | `GROQ_API_KEY` |
+
+To add custom models at runtime:
+
+```python
+from foundation.model_registry import register_model
+register_model("my_model", lambda **kw: MyCustomLLM(**kw))
 ```
 
 ## Data Indexing

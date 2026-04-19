@@ -70,11 +70,12 @@ Settings live in `config/settings.py` and can be overridden with environment var
 - `LLM_PRESET` (default: `gemma3_instruct_12b`)
 - `LLM_BACKEND` (`jax`, `torch`, `tensorflow`)
 - `LLM_MAX_TOKENS`, `LLM_SHORT_MAX_TOKENS`
-- `CHROMA_PERSIST_DIR` (default: `./chroma_db`)
+- `CHROMA_PERSIST_DIR` (default: `./chroma_db`; the notebook sets this to `PROJECT_DIR/chroma_db` on Google Drive so the index persists across Colab sessions — full Food.com indexing can produce a large DB, avoid deleting it unless you intend to rebuild)
 - `SEARCH_TOP_K`
 - `DEFAULT_MODEL_ID` (default: `gemini_flash` — the LLM used by `run_query` when `model_id` is omitted)
 - `GOOGLE_API_KEY` (required — used by the default `gemini_flash` model)
 - `GROQ_API_KEY` (for Groq models via `model_id="groq_llama"`)
+- `HOSTED_MODEL_FAILOVER_ID` (default: `gemma3`; used when hosted model calls fail due to auth/permission errors)
 
 Example:
 
@@ -142,6 +143,10 @@ result = run_query(workflow, "Fault F004 on my drive", model_id="groq_llama")
 result = run_query(workflow, "Fault F004", model_id="gemini_flash", mode="fast_interactive")
 ```
 
+If a hosted provider call fails with auth/permission errors (for example, `401`,
+`403`, or revoked/leaked API keys), the hosted adapter automatically fails over to
+`HOSTED_MODEL_FAILOVER_ID` (defaults to `gemma3`).
+
 Available model IDs:
 
 | `model_id` | Provider | Model | Requires |
@@ -167,9 +172,9 @@ Use `ingestion/index_builder.py` helpers:
 index_builder.index_industrial_docs("./data/manuals")
 ```
 
-- Food.com CSV:
+- Food.com CSV (the notebook indexes the full CSV when `data/RAW_recipes.csv` exists under `PROJECT_DIR`; set `RECIPE_MAX_ROWS` to cap rows for debugging):
 ```python
-index_builder.index_recipes("./data/RAW_recipes.csv", max_rows=50000)
+index_builder.index_recipes("./data/RAW_recipes.csv", max_rows=None)  # all rows
 ```
 
 - ArXiv (scientific):

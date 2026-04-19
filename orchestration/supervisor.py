@@ -62,10 +62,7 @@ class SupervisorAgent:
             )
 
             if "error" in result:
-                logger.warning(
-                    "Supervisor parse failed (rich prompt), raw: %s",
-                    result.get("raw", "")[:120],
-                )
+                logger.warning("Supervisor parse failed (rich prompt)")
                 # Second attempt: fall back to a simpler, JSON-only prompt.
                 backup = self._route_with_simple_prompt(query)
                 if backup is not None:
@@ -75,7 +72,7 @@ class SupervisorAgent:
             return self._build_routing_from_result(result, query)
 
         except Exception as e:
-            logger.error(f"Supervisor routing failed: {e}")
+            logger.error("Supervisor routing failed: %s: %s", type(e).__name__, str(e)[:80])
             backup = self._route_with_simple_prompt(query)
             if backup is not None:
                 return backup
@@ -162,14 +159,11 @@ class SupervisorAgent:
         try:
             result = self.llm.invoke_and_parse_json([HumanMessage(content=prompt)])
             if "error" in result:
-                logger.warning(
-                    "Simple supervisor prompt parse failed, raw: %s",
-                    result.get("raw", "")[:120],
-                )
+                logger.warning("Simple supervisor prompt parse failed")
                 return None
             return self._build_routing_from_result(result, query)
         except Exception as e:
-            logger.error(f"Simple supervisor routing failed: {e}")
+            logger.error("Simple supervisor routing failed: %s: %s", type(e).__name__, str(e)[:80])
             return None
 
     @staticmethod

@@ -82,6 +82,19 @@ _PREPROCESSORS = {
 }
 
 
+# Domains whose documents are already atomic units of meaning (one recipe =
+# one chunk). For these, only split when the document exceeds the chunk-size
+# budget — and then along domain-aware separators.
+_ATOMIC_DOMAINS = frozenset({"recipe"})
+
+# Separator ordering per atomic domain — used only when the document overflows.
+_ATOMIC_SPLIT_SEPARATORS: Dict[str, list] = {
+    # Prefer splitting between steps (`\n  N.`) and sections (`\n\n`) before
+    # falling back to sentence / whitespace boundaries.
+    "recipe": ["\nSteps:\n", "\n\n", "\n  ", "\n", ". ", " "],
+}
+
+
 # ── Chunking Pipeline ────────────────────────────────────────────────────────
 
 class ChunkingPipeline:
@@ -107,6 +120,21 @@ class ChunkingPipeline:
             is_separator_regex=False,
         )
 
+        # Lazily-built splitters for atomic domains with custom separators.
+        self._atomic_splitters: Dict[str, RecursiveCharacterTextSplitter] = {}
+
+    def _get_atomic_splitter(self, domain: str) -> RecursiveCharacterTextSplitter:
+        """Return (caching) a splitter tuned for an atomic domain's overflow case."""
+        if domain not in self._atomic_splitters:
+            self._atomic_splitters[domain] = RecursiveCharacterTextSplitter(
+                chunk_size=self._char_chunk_size,
+                chunk_overlap=self._char_overlap,
+                separators=_ATOMIC_SPLIT_SEPARATORS.get(domain, self.config.separators),
+                length_function=len,
+                is_separator_regex=False,
+            )
+        return self._atomic_splitters[domain]
+
     def chunk_documents(
         self,
         documents: List[Document],
@@ -120,7 +148,12 @@ class ChunkingPipeline:
         - parent_id: ID of the source document
         """
         preprocessor = _PREPROCESSORS.get(domain)
-        all_chunks = []
+        is_atomic = domain in _ATOMIC_DOMAINS
+        atomic_splitter = self._get_atomic_splitter(domain) if is_atomic else None
+
+        all_chunks: List[Document] = []
+        atomic_kept = 0
+        atomic_split = 0
 
         for doc in documents:
             # Apply domain preprocessing if available
@@ -128,8 +161,16 @@ class ChunkingPipeline:
             if preprocessor:
                 text = preprocessor(text)
 
-            # Split into chunks
-            text_chunks = self._splitter.split_text(text)
+            # For atomic domains, keep the whole document as one chunk when it
+            # fits — preserves coherence of short recipes / abstracts / etc.
+            if is_atomic and len(text) <= self._char_chunk_size:
+                text_chunks = [text]
+                atomic_kept += 1
+            elif is_atomic:
+                text_chunks = atomic_splitter.split_text(text)
+                atomic_split += 1
+            else:
+                text_chunks = self._splitter.split_text(text)
 
             parent_id = doc.metadata.get("id", doc.metadata.get("source", "unknown"))
 
@@ -139,17 +180,25 @@ class ChunkingPipeline:
                     "chunk_index": i,
                     "total_chunks": len(text_chunks),
                     "parent_id": parent_id,
-                    "id": f"{parent_id}_chunk_{i}",
+                    # For single-chunk atomic docs, keep the stable parent id —
+                    # makes Chroma upserts idempotent across re-runs.
+                    "id": parent_id if len(text_chunks) == 1 else f"{parent_id}_chunk_{i}",
                     "domain": domain,
                 }
                 all_chunks.append(
                     Document(page_content=chunk_text, metadata=chunk_metadata)
                 )
 
-        logger.info(
-            f"Chunked {len(documents)} documents into {len(all_chunks)} chunks "
-            f"(domain={domain})"
-        )
+        if is_atomic:
+            logger.info(
+                f"Chunked {len(documents)} {domain} documents into "
+                f"{len(all_chunks)} chunks (atomic={atomic_kept}, split={atomic_split})"
+            )
+        else:
+            logger.info(
+                f"Chunked {len(documents)} documents into {len(all_chunks)} chunks "
+                f"(domain={domain})"
+            )
         return all_chunks
 
     def chunk_single(self, text: str, domain: str = "general") -> List[str]:

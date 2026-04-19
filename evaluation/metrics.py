@@ -253,7 +253,7 @@ class Evaluator:
                 "checks": checks,
             })
             status = "PASS" if passed else "FAIL"
-            logger.info("Functional %s: %s → %s (expected %s)", status, query_text[:50], result.get("domain"), expected)
+            logger.info("Functional %s: → %s (expected %s)", status, result.get("domain"), expected)
 
         return {
             "pass_rate": sum(r["passed"] for r in results) / len(results) if results else 0,

@@ -136,6 +136,10 @@ class KerasHubChatModel(BaseChatModel):
             return keras_hub.models.Gemma3CausalLM.from_preset(preset, dtype=dtype)
         return keras_hub.models.CausalLM.from_preset(preset, dtype=dtype)
 
+    _KAGGLE_CONSENT_URL = (
+        "https://www.kaggle.com/models/keras/gemma3/keras/gemma3_instruct_12b"
+    )
+
     def _load_model(self):
         """Load the KerasHub model with configured precision."""
         try:
@@ -151,7 +155,17 @@ class KerasHubChatModel(BaseChatModel):
             )
             logger.info("Model loaded successfully.")
         except Exception as e:
-            logger.error(f"Failed to load primary model: {e}")
+            err_lower = str(e).lower()
+            if "403" in err_lower or "permission" in err_lower or "consent" in err_lower:
+                logger.error(
+                    "Kaggle returned 403 for preset '%s'. Accept the model "
+                    "license at %s with the same Kaggle account used for "
+                    "KAGGLE_USERNAME / KAGGLE_KEY, then retry.",
+                    self.config.preset,
+                    self._KAGGLE_CONSENT_URL,
+                )
+            else:
+                logger.error(f"Failed to load primary model: {e}")
             if self.config.fallback_preset:
                 logger.info(f"Attempting fallback: {self.config.fallback_preset}")
                 self._formatter = _get_formatter(self.config.fallback_preset)
@@ -270,5 +284,5 @@ class KerasHubChatModel(BaseChatModel):
             except json.JSONDecodeError:
                 pass
 
-        logger.warning("JSON parse failed, raw output: %s", text[:200])
+        logger.warning("JSON parse failed (output length=%d)", len(text))
         return {"error": "parse_failed", "raw": text}

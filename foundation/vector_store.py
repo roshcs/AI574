@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
 
@@ -50,11 +51,10 @@ class VectorStoreService:
 
     def _initialize(self):
         """Initialize ChromaDB client and create collections."""
-        self._client = chromadb.Client(
-            ChromaSettings(
-                persist_directory=self.config.persist_directory,
-                anonymized_telemetry=False,
-            )
+        persist_dir = os.getenv("CHROMA_PERSIST_DIR") or self.config.persist_directory
+        self._client = chromadb.PersistentClient(
+            path=persist_dir,
+            settings=ChromaSettings(anonymized_telemetry=False),
         )
         # Create or get each domain collection
         for domain, collection_name in self.config.collections.items():

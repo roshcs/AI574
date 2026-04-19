@@ -14,6 +14,9 @@ Environment-variable overrides (all optional):
     SEARCH_TOP_K           — vector store top-k results
     DEFAULT_MODEL_ID       — runtime model used by run_query when model_id
                              is omitted (default: gemini_flash)
+    HOSTED_MODEL_FAILOVER_ID — automatic fallback model when a hosted LLM
+                             call fails due to auth/permission errors
+                             (default: gemma3)
 """
 
 import os

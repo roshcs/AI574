@@ -24,6 +24,18 @@ from langchain_core.messages import BaseMessage
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_FAILOVER_MODEL_ID = os.getenv("HOSTED_MODEL_FAILOVER_ID", "gemma3").strip()
+_AUTH_ERROR_MARKERS = (
+    "permission_denied",
+    "api key was reported as leaked",
+    "invalid api key",
+    "authentication",
+    "unauthenticated",
+    "forbidden",
+    "401",
+    "403",
+)
+
 
 # ---------------------------------------------------------------------------
 # JSON parse helper (shared with KerasHubChatModel)
@@ -60,7 +72,7 @@ def _parse_llm_json(text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    logger.warning("JSON parse failed, raw output: %s", text[:200])
+    logger.warning("JSON parse failed (output length=%d)", len(text))
     return {"error": "parse_failed", "raw": text}
 
 
@@ -84,8 +96,53 @@ class HostedChatModelAdapter:
         "groq-chat": "max_tokens",
     }
 
-    def __init__(self, model: BaseChatModel):
+    def __init__(
+        self,
+        model: BaseChatModel,
+        fallback_model_id: Optional[str] = None,
+        fallback_kwargs: Optional[Dict[str, Any]] = None,
+    ):
         self._model = model
+        self._fallback_model_id = fallback_model_id
+        self._fallback_kwargs = fallback_kwargs or {}
+        self._fallback_active = False
+
+    @staticmethod
+    def _looks_like_auth_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return any(marker in text for marker in _AUTH_ERROR_MARKERS)
+
+    def _activate_fallback(self, root_exc: Exception) -> bool:
+        fallback_model_id = (self._fallback_model_id or "").strip()
+        if self._fallback_active or not fallback_model_id:
+            return False
+
+        try:
+            fallback_model = get_llm(fallback_model_id, **self._fallback_kwargs)
+            self._model = fallback_model
+            self._fallback_active = True
+            logger.warning(
+                "Hosted model call failed (%s: %s). Falling back to model_id='%s'.",
+                type(root_exc).__name__,
+                str(root_exc)[:80],
+                fallback_model_id,
+            )
+            return True
+        except Exception as fallback_exc:
+            logger.error(
+                "Hosted model call failed (%s: %s) and fallback model_id='%s' "
+                "could not be created (%s: %s).",
+                type(root_exc).__name__,
+                str(root_exc)[:80],
+                fallback_model_id,
+                type(fallback_exc).__name__,
+                str(fallback_exc)[:80],
+            )
+            return False
+
+    def _invoke_with_current_model(self, messages, kwargs: dict):
+        translated = self._translate_kwargs(dict(kwargs))
+        return self._model.invoke(messages, **translated)
 
     def _translate_kwargs(self, kwargs: dict) -> dict:
         """Map generic ``max_new_tokens`` to the provider's expected key."""
@@ -93,22 +150,28 @@ class HostedChatModelAdapter:
             return kwargs
         budget = kwargs.pop("max_new_tokens")
         provider_type = getattr(self._model, "_llm_type", "")
-        target_key = self._TOKEN_KWARG_MAP.get(provider_type, "max_tokens")
-        kwargs[target_key] = budget
+        target_key = self._TOKEN_KWARG_MAP.get(provider_type)
+        if target_key:
+            kwargs[target_key] = budget
+        else:
+            kwargs["max_new_tokens"] = budget
         return kwargs
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._model, name)
 
     def invoke(self, messages, **kwargs):
-        kwargs = self._translate_kwargs(kwargs)
-        return self._model.invoke(messages, **kwargs)
+        try:
+            return self._invoke_with_current_model(messages, kwargs)
+        except Exception as exc:
+            if self._looks_like_auth_error(exc) and self._activate_fallback(exc):
+                return self._invoke_with_current_model(messages, kwargs)
+            raise
 
     def invoke_and_parse_json(
         self, messages: List[BaseMessage], **kwargs
     ) -> dict:
-        kwargs = self._translate_kwargs(kwargs)
-        result = self._model.invoke(messages, **kwargs)
+        result = self.invoke(messages, **kwargs)
         return _parse_llm_json(result.content.strip())
 
     @property
@@ -144,7 +207,9 @@ def _make_gemini_flash(**kwargs) -> HostedChatModelAdapter:
         google_api_key=api_key,
         temperature=kwargs.get("temperature", 0.7),
     )
-    return HostedChatModelAdapter(model)
+    fallback_model_id = kwargs.get("fallback_model_id", _DEFAULT_FAILOVER_MODEL_ID)
+    fallback_model_id = (fallback_model_id or "").strip() or None
+    return HostedChatModelAdapter(model, fallback_model_id=fallback_model_id)
 
 
 def _make_gemini_pro(**kwargs) -> HostedChatModelAdapter:
@@ -169,7 +234,9 @@ def _make_groq_llama(**kwargs) -> HostedChatModelAdapter:
         api_key=api_key,
         temperature=kwargs.get("temperature", 0.7),
     )
-    return HostedChatModelAdapter(model)
+    fallback_model_id = kwargs.get("fallback_model_id", _DEFAULT_FAILOVER_MODEL_ID)
+    fallback_model_id = (fallback_model_id or "").strip() or None
+    return HostedChatModelAdapter(model, fallback_model_id=fallback_model_id)
 
 
 MODEL_REGISTRY: Dict[str, Callable[..., Any]] = {

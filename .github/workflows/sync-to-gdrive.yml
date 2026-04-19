@@ -31,6 +31,19 @@ jobs:
           echo '${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}' > /tmp/sa.json
           chmod 600 /tmp/sa.json
 
+      - name: Scan for leaked secrets
+        run: |
+          echo "Scanning tracked files for API key patterns..."
+          PATTERNS='AIzaSy[A-Za-z0-9_-]{33}|[0-9a-f]{32}'
+          if grep -rPn "$PATTERNS" \
+               --include='*.py' --include='*.ipynb' --include='*.yml' \
+               --include='*.yaml' --include='*.json' --include='*.md' \
+               --exclude-dir='.git' --exclude-dir='__pycache__' .; then
+            echo "::error::Potential API keys or secrets found in tracked files. Remove them before syncing."
+            exit 1
+          fi
+          echo "No secrets detected."
+
       - name: Sync project files
         run: |
           rclone copy . gdrive:AI574_Multi_Domain_Agent/project/ \

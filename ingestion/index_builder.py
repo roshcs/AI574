@@ -69,19 +69,62 @@ class IndexBuilder:
 
     # ── Recipe Domain ─────────────────────────────────────────────────────
 
-    def index_recipes(self, csv_path: str, max_rows: Optional[int] = None) -> int:
+    def index_recipes(
+        self,
+        csv_path: str,
+        max_rows: Optional[int] = None,
+        *,
+        dedupe: bool = True,
+        drop_junk: bool = True,
+        interactions_csv: Optional[str] = None,
+        batch_size: int = 1000,
+    ) -> int:
         """
         Index Food.com recipes from CSV.
-        Recipes are already semi-structured so chunking is lighter.
+
+        Parameters
+        ----------
+        csv_path : str
+            Path to RAW_recipes.csv.
+        max_rows : int, optional
+            Cap input rows (useful for smoke tests).
+        dedupe : bool
+            Exact-hash dedupe on normalized (name, ingredients). Default True.
+        drop_junk : bool
+            Filter rows with empty steps or implausible minutes. Default True.
+        interactions_csv : str, optional
+            Path to RAW_interactions.csv for popularity enrichment.
+        batch_size : int
+            How many Documents to embed + upsert per Chroma round-trip.
+
+        Recipes are atomic units: ``ChunkingPipeline`` preserves each recipe
+        as a single chunk when it fits the chunk-size budget.
         """
-        logger.info(f"Indexing recipes from: {csv_path}")
-        docs = self.loader.load_food_csv(csv_path, max_rows=max_rows)
-        # Recipes are typically short enough to be single chunks,
-        # but we chunk anyway for consistency
-        chunks = self.chunker.chunk_documents(docs, domain="recipe")
-        count = self.vector_store.add_documents("recipe", chunks)
-        logger.info(f"Recipe indexing complete: {count} chunks stored")
-        return count
+        logger.info(
+            f"Indexing recipes from: {csv_path} "
+            f"(dedupe={dedupe}, interactions={'yes' if interactions_csv else 'no'})"
+        )
+        docs = self.loader.load_food_csv(
+            csv_path,
+            max_rows=max_rows,
+            dedupe=dedupe,
+            drop_junk=drop_junk,
+            interactions_csv=interactions_csv,
+        )
+
+        total = 0
+        for i in range(0, len(docs), batch_size):
+            batch = docs[i : i + batch_size]
+            chunks = self.chunker.chunk_documents(batch, domain="recipe")
+            added = self.vector_store.add_documents("recipe", chunks)
+            total += added
+            logger.info(
+                f"Recipe batch {i // batch_size + 1}: "
+                f"indexed {added} chunks ({total:,} total)"
+            )
+
+        logger.info(f"Recipe indexing complete: {total:,} chunks stored")
+        return total
 
     # ── Scientific Domain ─────────────────────────────────────────────────
 

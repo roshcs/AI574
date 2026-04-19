@@ -21,6 +21,15 @@ chroma_db/
 *.db
 *.sqlite3
 
+# Datasets live on Drive / external storage, never in the repo.
+data/
+
+# ── Scratch / backups / archives ─────────────────────────────────────────────
+_patch_out/
+ingestion_update/
+*.bak
+*.zip
+
 # ── Notebook outputs ─────────────────────────────────────────────────────────
 .ipynb_checkpoints/
 

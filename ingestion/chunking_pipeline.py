@@ -85,13 +85,16 @@ _PREPROCESSORS = {
 # Domains whose documents are already atomic units of meaning (one recipe =
 # one chunk). For these, only split when the document exceeds the chunk-size
 # budget — and then along domain-aware separators.
-_ATOMIC_DOMAINS = frozenset({"recipe"})
+_ATOMIC_DOMAINS = frozenset({"recipe", "scientific"})
 
 # Separator ordering per atomic domain — used only when the document overflows.
 _ATOMIC_SPLIT_SEPARATORS: Dict[str, list] = {
     # Prefer splitting between steps (`\n  N.`) and sections (`\n\n`) before
     # falling back to sentence / whitespace boundaries.
     "recipe": ["\nSteps:\n", "\n\n", "\n  ", "\n", ". ", " "],
+    # Arxiv papers are rendered as Title / Authors / ... / Abstract / Comments
+    # separated by blank lines; prefer section breaks before sentence splits.
+    "scientific": ["\n\n", "\n", ". ", "! ", "? ", " "],
 }
 
 

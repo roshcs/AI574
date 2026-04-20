@@ -17,12 +17,13 @@ from __future__ import annotations
 import ast
 import csv
 import hashlib
+import json
 import logging
 import os
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from langchain_core.documents import Document
 
@@ -271,6 +272,105 @@ class DocumentLoader:
             ))
 
         logger.info(f"Fetched {len(docs)} papers from ArXiv for: '{query}'")
+        return docs
+
+    # ── ArXiv Kaggle Dump (bulk, offline) ─────────────────────────────────
+
+    def load_arxiv_dump(
+        self,
+        path: str,
+        *,
+        categories: Sequence[str] = ("cs.",),
+        year_min: Optional[int] = 2020,
+        year_max: Optional[int] = None,
+        max_rows: Optional[int] = None,
+        dedupe: bool = True,
+        min_abstract_chars: int = 40,
+    ) -> List[Document]:
+        """
+        Load the Cornell-University/arxiv Kaggle dump (newline-delimited JSON).
+
+        Each line is one paper; we filter by category prefix and year, parse
+        title/authors/abstract/comments, and emit a Document per paper with
+        rich, Chroma-compatible metadata.
+
+        Parameters
+        ----------
+        path : str
+            Path to ``arxiv-metadata-oai-snapshot.json`` (NDJSON, ~4 GB).
+        categories : sequence of str
+            Accept papers whose ``categories`` field contains any of these
+            *prefixes* (e.g. ``"cs."`` matches cs.LG, cs.CL, …). Empty tuple
+            disables the filter.
+        year_min, year_max : int or None
+            Keep only papers whose ``update_date`` year is within range.
+            Defaults to 2020..present.
+        max_rows : int, optional
+            Cap input rows (for smoke tests).
+        dedupe : bool
+            Drop exact duplicates by ``arxiv_id``.
+        min_abstract_chars : int
+            Skip papers with abstracts shorter than this (placeholder rows).
+        """
+        validated = _validate_arxiv_dump_path(path, allowed_root=self.allowed_root)
+        cat_prefixes = tuple(c for c in categories if c)
+
+        seen: set = set()
+        dropped_cat = 0
+        dropped_year = 0
+        dropped_abstract = 0
+        dropped_dupe = 0
+        kept = 0
+        docs: List[Document] = []
+
+        with open(validated, "r", encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if max_rows and kept >= max_rows:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                if cat_prefixes and not _arxiv_matches_categories(row, cat_prefixes):
+                    dropped_cat += 1
+                    continue
+
+                year = _arxiv_year(row)
+                if (year_min is not None and year < year_min) or (
+                    year_max is not None and year > year_max
+                ):
+                    dropped_year += 1
+                    continue
+
+                abstract = (row.get("abstract") or "").strip()
+                if len(abstract) < min_abstract_chars:
+                    dropped_abstract += 1
+                    continue
+
+                arxiv_id = (row.get("id") or "").strip()
+                if dedupe:
+                    if not arxiv_id or arxiv_id in seen:
+                        dropped_dupe += 1
+                        continue
+                    seen.add(arxiv_id)
+
+                metadata = _build_arxiv_metadata(row, year)
+                content = _format_arxiv(row, metadata)
+                if not content.strip():
+                    continue
+
+                docs.append(Document(page_content=content, metadata=metadata))
+                kept += 1
+
+        logger.info(
+            f"Loaded {len(docs):,} arxiv papers from {path} "
+            f"(dropped_cat={dropped_cat:,}, dropped_year={dropped_year:,}, "
+            f"dropped_abstract={dropped_abstract:,}, dropped_dupe={dropped_dupe:,})"
+        )
         return docs
 
     # ── Raw Text Helper ───────────────────────────────────────────────────
@@ -559,3 +659,177 @@ def _aggregate_interactions(
         rid: (counts[rid], sums[rid] / counts[rid] if counts[rid] else 0.0)
         for rid in counts
     }
+
+
+# ── Private Helpers — ArXiv Kaggle Dump ───────────────────────────────────────
+
+# Arxiv dump allows `.json` alongside the other loader extensions.
+_ARXIV_DUMP_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson"})
+
+
+def _validate_arxiv_dump_path(path: str, *, allowed_root: Optional[str]) -> Path:
+    """Lighter-touch validator for the arxiv dump (NDJSON, not in _ALLOWED_EXTENSIONS)."""
+    resolved = Path(path).resolve()
+    if allowed_root is not None:
+        try:
+            resolved.relative_to(Path(allowed_root).resolve())
+        except ValueError:
+            raise ValueError(
+                f"Path '{resolved}' is outside the allowed root '{allowed_root}'"
+            )
+    if resolved.suffix.lower() not in _ARXIV_DUMP_EXTENSIONS:
+        raise ValueError(
+            f"Unsupported arxiv-dump extension '{resolved.suffix}'. "
+            f"Expected one of {sorted(_ARXIV_DUMP_EXTENSIONS)}"
+        )
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Arxiv dump not found at '{resolved}'")
+    return resolved
+
+
+def _arxiv_split_categories(raw: str) -> List[str]:
+    """Split the arxiv 'categories' field — space-delimited prefixes."""
+    if not raw:
+        return []
+    return [c.strip() for c in raw.split() if c.strip()]
+
+
+def _arxiv_matches_categories(row: dict, prefixes: Tuple[str, ...]) -> bool:
+    cats = _arxiv_split_categories(row.get("categories", ""))
+    for c in cats:
+        for pref in prefixes:
+            if c.startswith(pref):
+                return True
+    return False
+
+
+def _arxiv_year(row: dict) -> int:
+    """Prefer update_date; fall back to latest version; 0 if neither is present."""
+    ud = (row.get("update_date") or "").strip()
+    if len(ud) >= 4 and ud[:4].isdigit():
+        return int(ud[:4])
+    versions = row.get("versions") or []
+    if versions:
+        created = (versions[-1].get("created") or "").strip()
+        # Format: "Mon, 2 Apr 2007 19:18:42 GMT" — grab 4-digit token
+        m = re.search(r"\b(19|20)\d{2}\b", created)
+        if m:
+            return int(m.group(0))
+    return 0
+
+
+def _arxiv_month(row: dict) -> int:
+    ud = (row.get("update_date") or "").strip()
+    if len(ud) >= 7 and ud[5:7].isdigit():
+        return int(ud[5:7])
+    return 0
+
+
+_ARXIV_FLAG_RULES: Dict[str, Tuple[str, ...]] = {
+    "is_ml":  ("cs.LG", "stat.ML"),
+    "is_nlp": ("cs.CL",),
+    "is_cv":  ("cs.CV",),
+    "is_ai":  ("cs.AI",),
+    "is_ir":  ("cs.IR",),
+    "is_ro":  ("cs.RO",),
+    "is_sec": ("cs.CR",),
+}
+
+
+def _arxiv_authors_display(row: dict, limit: int = 3) -> Tuple[str, int]:
+    """Return (short display string, total author count)."""
+    parsed = row.get("authors_parsed") or []
+    if parsed:
+        n = len(parsed)
+        names = []
+        for rec in parsed[:limit]:
+            # [last, first, suffix] — prefer first + last
+            last = (rec[0] if len(rec) > 0 else "").strip()
+            first = (rec[1] if len(rec) > 1 else "").strip()
+            names.append(f"{first} {last}".strip() or last)
+        shown = ", ".join(n for n in names if n)
+        if n > limit:
+            shown += f", et al. ({n - limit} more)"
+        return shown, n
+    raw = (row.get("authors") or "").strip()
+    # Rough count on "and" + comma separators
+    n = raw.count(",") + (1 if raw else 0)
+    return raw[:200], n
+
+
+def _build_arxiv_metadata(row: dict, year: int) -> Dict[str, object]:
+    """Build Chroma-safe metadata dict for one arxiv paper."""
+    arxiv_id = (row.get("id") or "").strip()
+    cats = _arxiv_split_categories(row.get("categories", ""))
+    cats_field = ("|" + "|".join(cats) + "|") if cats else ""
+    primary = cats[0] if cats else ""
+    authors_short, n_authors = _arxiv_authors_display(row)
+    doi = (row.get("doi") or "").strip()
+    comments = (row.get("comments") or "").strip()
+    journal_ref = (row.get("journal-ref") or "").strip()
+
+    meta: Dict[str, object] = {
+        "source": "arxiv",
+        "type": "scientific",
+        "domain": "scientific",
+        "id": f"arxiv_{arxiv_id}" if arxiv_id else "arxiv_unknown",
+        "arxiv_id": arxiv_id,
+        "title": (row.get("title") or "").strip().replace("\n", " "),
+        "authors_short": authors_short,
+        "n_authors": n_authors,
+        "categories": cats_field,
+        "primary_category": primary,
+        "year": year,
+        "month": _arxiv_month(row),
+        "has_doi": bool(doi),
+        "doi": doi,
+        "has_comments": bool(comments),
+        "comments_len": len(comments),
+        "journal_ref": journal_ref,
+    }
+    # Derived topic flags — the set/any pattern mirrors recipe dietary flags
+    cat_set = set(cats)
+    for flag, rule_cats in _ARXIV_FLAG_RULES.items():
+        meta[flag] = any(c in cat_set for c in rule_cats)
+    return meta
+
+
+def _format_arxiv(row: dict, meta: Dict[str, object]) -> str:
+    """Render a paper as the text that will be embedded."""
+    parts: List[str] = []
+    title = meta.get("title") or ""
+    if title:
+        parts.append(f"Title: {title}")
+
+    authors_short = meta.get("authors_short")
+    if authors_short:
+        parts.append(f"Authors: {authors_short}")
+
+    cats = _arxiv_split_categories(row.get("categories", ""))
+    if cats:
+        parts.append("Categories: " + ", ".join(cats))
+
+    year = meta.get("year", 0)
+    month = meta.get("month", 0)
+    if year:
+        parts.append(
+            f"Published: {year}-{month:02d}" if month else f"Published: {year}"
+        )
+
+    abstract = (row.get("abstract") or "").strip()
+    if abstract:
+        parts.append(f"Abstract: {abstract}")
+
+    comments = (row.get("comments") or "").strip()
+    if comments:
+        parts.append(f"Comments: {comments}")
+
+    journal_ref = meta.get("journal_ref") or ""
+    if journal_ref:
+        parts.append(f"Journal-ref: {journal_ref}")
+
+    doi = meta.get("doi") or ""
+    if doi:
+        parts.append(f"DOI: {doi}")
+
+    return "\n\n".join(parts)

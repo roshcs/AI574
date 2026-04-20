@@ -27,7 +27,7 @@ data/
 # ── Scratch / backups / archives ─────────────────────────────────────────────
 _patch_out/
 ingestion_update/
-*.bak
+*.bak*
 *.zip
 
 # ── Notebook outputs ─────────────────────────────────────────────────────────

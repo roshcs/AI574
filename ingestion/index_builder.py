@@ -14,8 +14,16 @@ Usage:
     # Recipe domain
     builder.index_recipes("./data/RAW_recipes.csv", max_rows=50000)
 
-    # Scientific domain (on-demand, not pre-indexed)
+    # Scientific domain — on-demand backfill from the live ArXiv API
     builder.index_arxiv_papers("transformer attention", max_results=10)
+
+    # Scientific domain — bulk from the Cornell-University/arxiv Kaggle dump
+    builder.index_arxiv_dump(
+        "./data/scientific/arxiv-metadata-oai-snapshot.json",
+        categories=("cs.",),
+        year_min=2020,
+        batch_size=1000,
+    )
 """
 
 from __future__ import annotations
@@ -159,6 +167,80 @@ class IndexBuilder:
         count = self.vector_store.add_documents("scientific", chunks)
         logger.info(f"Scientific indexing complete: {count} chunks stored")
         return count
+
+    def index_arxiv_dump(
+        self,
+        dump_path: str,
+        max_rows: Optional[int] = None,
+        *,
+        categories=("cs.",),
+        year_min: Optional[int] = 2020,
+        year_max: Optional[int] = None,
+        dedupe: bool = True,
+        batch_size: int = 1000,
+        skip_existing: bool = True,
+    ) -> int:
+        """
+        Bulk-index the Cornell-University/arxiv Kaggle dump (NDJSON).
+
+        Parameters
+        ----------
+        dump_path : str
+            Path to the arxiv-metadata-oai-snapshot JSON file.
+        max_rows : int, optional
+            Cap *kept* rows (after filtering). Useful for smoke tests.
+        categories : sequence of str
+            Accept papers whose ``categories`` field contains any of these
+            prefixes (e.g. ``("cs.",)`` = all computer-science sub-fields).
+        year_min, year_max : int, optional
+            Year window on ``update_date``. Defaults to 2020..present.
+        dedupe : bool
+            Drop duplicate arxiv_ids within the stream.
+        batch_size : int
+            Embed + upsert this many papers per Chroma round-trip.
+        skip_existing : bool
+            Skip papers whose ``arxiv_<id>`` is already in Chroma, so re-runs
+            after interrupted jobs are cheap.
+
+        Returns the count of *new* papers indexed (skipped ones not counted).
+        """
+        logger.info(
+            f"Indexing arxiv dump: {dump_path} "
+            f"(categories={list(categories)}, year_min={year_min}, "
+            f"year_max={year_max}, skip_existing={skip_existing})"
+        )
+        docs = self.loader.load_arxiv_dump(
+            dump_path,
+            categories=categories,
+            year_min=year_min,
+            year_max=year_max,
+            max_rows=max_rows,
+            dedupe=dedupe,
+        )
+
+        total = 0
+        skipped = 0
+        for i in range(0, len(docs), batch_size):
+            batch = docs[i : i + batch_size]
+            chunks = self.chunker.chunk_documents(batch, domain="scientific")
+            before = self.vector_store.get_collection_stats("scientific")["document_count"]
+            added = self.vector_store.add_documents(
+                "scientific", chunks, skip_existing=skip_existing,
+            )
+            after = self.vector_store.get_collection_stats("scientific")["document_count"]
+            skipped_batch = max(0, len(chunks) - (after - before))
+            total += added
+            skipped += skipped_batch
+            logger.info(
+                f"Arxiv batch {i // batch_size + 1}: "
+                f"added {added}, skipped {skipped_batch} "
+                f"({total:,} added / {skipped:,} skipped total)"
+            )
+
+        logger.info(
+            f"Arxiv indexing complete: {total:,} new, {skipped:,} skipped"
+        )
+        return total
 
     # ── Generic ───────────────────────────────────────────────────────────
 

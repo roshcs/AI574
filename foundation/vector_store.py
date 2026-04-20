@@ -205,6 +205,25 @@ class VectorStoreService:
 
         return documents
 
+    def existing_ids(self, domain: str, ids: List[str]) -> set:
+        """Return the subset of ``ids`` already present in the domain collection.
+
+        Enables IndexBuilder to skip re-embedding documents whose stable IDs
+        (e.g. ``recipe_137739``, ``arxiv_2305.11206``) are already stored.
+        Uses Chroma's ``.get(ids=[...])`` which is O(len(ids)) regardless of
+        the collection's total size.
+        """
+        self._validate_domain(domain)
+        if not ids:
+            return set()
+        collection = self._collections[domain]
+        try:
+            existing = collection.get(ids=list(ids), include=[])
+        except Exception as e:
+            logger.warning(f"existing_ids() lookup failed on '{domain}': {e}")
+            return set()
+        return set(existing.get("ids", []) or [])
+
     def get_collection_stats(self, domain: str) -> dict:
         """Get stats for a domain collection."""
         self._validate_domain(domain)

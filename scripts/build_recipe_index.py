@@ -79,6 +79,11 @@ def parse_args() -> argparse.Namespace:
         help="Recipes per embed/upsert batch (default: 1000)",
     )
     p.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-embed every recipe even if its ID is already in Chroma",
+    )
+    p.add_argument(
         "--clear",
         action="store_true",
         help="Delete the existing recipe collection before indexing",
@@ -130,6 +135,10 @@ def main() -> int:
 
     builder = IndexBuilder(vector_store=vector_store)
 
+    skip_existing = not args.force
+    if args.force:
+        log.info("--force: will re-embed all recipes (skip_existing=False)")
+
     t0 = time.time()
     count = builder.index_recipes(
         str(recipes_path),
@@ -137,6 +146,7 @@ def main() -> int:
         dedupe=not args.no_dedupe,
         interactions_csv=interactions_arg,
         batch_size=args.batch_size,
+        skip_existing=skip_existing,
     )
     elapsed = time.time() - t0
 

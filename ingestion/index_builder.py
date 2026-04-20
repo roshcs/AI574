@@ -78,6 +78,7 @@ class IndexBuilder:
         drop_junk: bool = True,
         interactions_csv: Optional[str] = None,
         batch_size: int = 1000,
+        skip_existing: bool = True,
     ) -> int:
         """
         Index Food.com recipes from CSV.
@@ -96,13 +97,18 @@ class IndexBuilder:
             Path to RAW_interactions.csv for popularity enrichment.
         batch_size : int
             How many Documents to embed + upsert per Chroma round-trip.
+        skip_existing : bool
+            When True (default), recipe IDs already in Chroma are skipped —
+            no embedding or upsert is performed for them.  Pass False to
+            force a full re-embed (e.g. after changing interaction data).
 
         Recipes are atomic units: ``ChunkingPipeline`` preserves each recipe
         as a single chunk when it fits the chunk-size budget.
         """
         logger.info(
             f"Indexing recipes from: {csv_path} "
-            f"(dedupe={dedupe}, interactions={'yes' if interactions_csv else 'no'})"
+            f"(dedupe={dedupe}, interactions={'yes' if interactions_csv else 'no'}, "
+            f"skip_existing={skip_existing})"
         )
         docs = self.loader.load_food_csv(
             csv_path,
@@ -113,17 +119,27 @@ class IndexBuilder:
         )
 
         total = 0
+        skipped = 0
         for i in range(0, len(docs), batch_size):
             batch = docs[i : i + batch_size]
             chunks = self.chunker.chunk_documents(batch, domain="recipe")
-            added = self.vector_store.add_documents("recipe", chunks)
+            before = self.vector_store.get_collection_stats("recipe")["document_count"]
+            added = self.vector_store.add_documents(
+                "recipe", chunks, skip_existing=skip_existing,
+            )
+            after = self.vector_store.get_collection_stats("recipe")["document_count"]
+            skipped_batch = max(0, len(chunks) - (after - before))
             total += added
+            skipped += skipped_batch
             logger.info(
                 f"Recipe batch {i // batch_size + 1}: "
-                f"indexed {added} chunks ({total:,} total)"
+                f"added {added}, skipped {skipped_batch} "
+                f"({total:,} added / {skipped:,} skipped total)"
             )
 
-        logger.info(f"Recipe indexing complete: {total:,} chunks stored")
+        logger.info(
+            f"Recipe indexing complete: {total:,} new, {skipped:,} skipped"
+        )
         return total
 
     # ── Scientific Domain ─────────────────────────────────────────────────

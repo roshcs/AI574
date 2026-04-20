@@ -74,11 +74,20 @@ class VectorStoreService:
         domain: str,
         documents: List[Document],
         batch_size: int = 100,
+        skip_existing: bool = False,
     ) -> int:
         """
         Add LangChain Documents to a domain-specific collection.
 
-        Returns the number of documents added.
+        Parameters
+        ----------
+        skip_existing : bool
+            When True, IDs already present in the collection are silently
+            skipped — no embedding or upsert is performed for them.  This
+            makes re-runs cheap: only genuinely new documents pay for
+            embedding compute.
+
+        Returns the number of documents actually added.
         """
         self._validate_domain(domain)
         collection = self._collections[domain]
@@ -90,23 +99,57 @@ class VectorStoreService:
             for i, doc in enumerate(documents)
         ]
 
-        # Embed and upsert in batches
         added = 0
+        skipped = 0
         for i in range(0, len(texts), batch_size):
             batch_texts = texts[i : i + batch_size]
             batch_meta = metadatas[i : i + batch_size]
             batch_ids = ids[i : i + batch_size]
-            batch_embeddings = self.embedder.embed_documents(batch_texts)
+
+            keep = list(range(len(batch_ids)))
+
+            if skip_existing:
+                seen: set = set()
+                deduped = []
+                for j in keep:
+                    if batch_ids[j] not in seen:
+                        seen.add(batch_ids[j])
+                        deduped.append(j)
+                keep = deduped
+
+                present = set(
+                    collection.get(
+                        ids=[batch_ids[j] for j in keep],
+                        include=[],
+                    )["ids"]
+                )
+                keep = [j for j in keep if batch_ids[j] not in present]
+
+            if not keep:
+                skipped += len(batch_ids)
+                continue
+
+            final_texts = [batch_texts[j] for j in keep]
+            final_meta = [batch_meta[j] for j in keep]
+            final_ids = [batch_ids[j] for j in keep]
+            final_embeddings = self.embedder.embed_documents(final_texts)
 
             collection.upsert(
-                ids=batch_ids,
-                embeddings=batch_embeddings,
-                documents=batch_texts,
-                metadatas=batch_meta,
+                ids=final_ids,
+                embeddings=final_embeddings,
+                documents=final_texts,
+                metadatas=final_meta,
             )
-            added += len(batch_texts)
+            added += len(final_ids)
+            skipped += len(batch_ids) - len(final_ids)
 
-        logger.info(f"Added {added} documents to '{domain}' collection")
+        if skipped:
+            logger.info(
+                f"Added {added}, skipped {skipped} existing "
+                f"documents in '{domain}' collection"
+            )
+        else:
+            logger.info(f"Added {added} documents to '{domain}' collection")
         return added
 
     def _embed_query_cached(self, query: str) -> Tuple[float, ...]:

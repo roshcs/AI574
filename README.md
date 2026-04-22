@@ -8,6 +8,14 @@ AI574 is a multi-agent retrieval-augmented system that routes user queries acros
 The system uses a supervisor router plus a shared Corrective RAG (CRAG) pipeline:
 `retrieve -> grade -> rewrite (if needed) -> generate -> hallucination check`.
 
+## Documentation
+
+- [Documentation hub](docs/README.md): where to read first, repo map, notebooks, full test command
+- [Contributing](CONTRIBUTING.md): venv, pre-commit (`nbstripout`), tests, secrets policy
+- [Operations: indexing & Chroma](docs/OPERATIONS.md): offline index scripts and env vars
+- [Architecture](ARCHITECTURE.md): design, diagrams, module responsibilities
+- [Security](SECURITY.md): credentials and notebook hygiene
+
 Architecture details and recommendations are documented in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Architecture

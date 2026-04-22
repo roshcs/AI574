@@ -22,7 +22,7 @@ import chromadb
 from chromadb.config import Settings as ChromaSettings
 from langchain_core.documents import Document
 
-from foundation.embedding_service import EmbeddingService
+from foundation.embedding_service import EmbeddingService, _sanitize_embedding_texts
 from config.settings import VectorStoreConfig, CONFIG
 
 logger = logging.getLogger(__name__)
@@ -129,7 +129,7 @@ class VectorStoreService:
                 skipped += len(batch_ids)
                 continue
 
-            final_texts = [batch_texts[j] for j in keep]
+            final_texts = _sanitize_embedding_texts([batch_texts[j] for j in keep])
             final_meta = [batch_meta[j] for j in keep]
             final_ids = [batch_ids[j] for j in keep]
             final_embeddings = self.embedder.embed_documents(final_texts)

@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, List, Optional
 
 from langchain_core.embeddings import Embeddings
@@ -23,6 +24,18 @@ sys.path.append("..")
 from config.settings import EmbeddingConfig, CONFIG, DEFAULT_EMBEDDING_MODEL
 
 logger = logging.getLogger(__name__)
+
+# C0 control chars (except \t, \n, \r) + DEL + stray surrogates. HF fast
+# tokenizers reject some of these with the cryptic "TextEncodeInput must be
+# Union[...]" error. PyPDF extraction is the usual source.
+_CONTROL_CHAR_RE = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff]"
+)
+
+
+def _strip_controls(s: str) -> str:
+    """Replace tokenizer-hostile control chars with a space."""
+    return _CONTROL_CHAR_RE.sub(" ", s)
 
 
 def _normalize_one(value: Any, *, _depth: int = 0) -> str:
@@ -59,13 +72,18 @@ def _normalize_one(value: Any, *, _depth: int = 0) -> str:
         pass
     if not isinstance(value, str):
         value = str(value)
+    # Cast to plain `str` (not numpy.str_, not subclass) and scrub control chars.
+    value = str.__str__(value) if value.__class__ is not str else value
+    value = _strip_controls(value)
+    # Re-encode through UTF-8 with replacement to drop invalid surrogates.
+    value = value.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
     value = value.strip()
     return value if value else " "
 
 
 def _sanitize_embedding_texts(texts: List[str]) -> List[str]:
     """List-wise wrapper: plain str instances for sentence-transformers."""
-    return [str(_normalize_one(t)) for t in texts]
+    return [str.__str__(_normalize_one(t)) for t in texts]
 
 
 class EmbeddingService(Embeddings):
@@ -152,13 +170,26 @@ class EmbeddingService(Embeddings):
                 import numpy as np
 
                 rows = []
-                for s in batch:
-                    v = self._model.encode(
-                        s,
-                        show_progress_bar=False,
-                        normalize_embeddings=True,
-                        convert_to_numpy=True,
-                    )
+                for idx, s in enumerate(batch):
+                    try:
+                        v = self._model.encode(
+                            s,
+                            show_progress_bar=False,
+                            normalize_embeddings=True,
+                            convert_to_numpy=True,
+                        )
+                    except TypeError as e:
+                        preview = s[:80] if isinstance(s, str) else repr(s)[:80]
+                        logger.warning(
+                            "Tokenizer rejected chunk %d (type=%s, len=%d, preview=%r): %s "
+                            "- substituting zero vector",
+                            idx,
+                            type(s).__name__,
+                            len(s) if hasattr(s, "__len__") else -1,
+                            preview,
+                            e,
+                        )
+                        v = np.zeros(self.config.dimension, dtype=np.float32)
                     rows.append(np.atleast_2d(v))
                 embeddings = np.vstack(rows)
             all_embeddings.extend(embeddings.tolist())

@@ -25,14 +25,16 @@ from config.settings import ChunkingConfig, CONFIG
 logger = logging.getLogger(__name__)
 
 
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff]")
+
+
 def _coerce_text(value) -> str:
     """
     Best-effort coercion of arbitrary loader output to a plain Python str.
 
     Returns '' for empty/whitespace-only input; callers should skip those.
-    Kept intentionally local so the chunker is self-contained (no upstream
-    sanitization can be relied on — PyPDF, CSV rows, and user-supplied
-    texts all land here).
+    Also scrubs tokenizer-hostile control chars so downstream HF fast
+    tokenizers cannot trip over PDF-extracted NULs / stray surrogates.
     """
     if value is None:
         return ""
@@ -52,6 +54,10 @@ def _coerce_text(value) -> str:
         except ImportError:
             pass
         value = str(value)
+    if value.__class__ is not str:
+        value = str.__str__(value)
+    value = _CTRL_RE.sub(" ", value)
+    value = value.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
     return value.strip()
 
 

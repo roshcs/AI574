@@ -28,6 +28,10 @@ class AgentState(TypedDict, total=False):
     # ── Routing ───────────────────────────────────────────────────────────
     routed_domain: str                       # "industrial" | "recipe" | "scientific" | "clarify" | "fallback"
     routing_confidence: float                # 0.0 - 1.0
+    second_routed_domain: str                # second-best route, when available
+    second_routing_confidence: float         # 0.0 - 1.0
+    routing_ambiguity: float                 # 0.0 - 1.0
+    routing_requires_clarification: bool     # LLM/router ambiguity signal
     routing_reasoning: str                   # Why this domain was chosen
 
     # ── RAG State ─────────────────────────────────────────────────────────
@@ -71,6 +75,10 @@ def create_initial_state(
         conversation_history=history or [],
         routed_domain="",
         routing_confidence=0.0,
+        second_routed_domain="",
+        second_routing_confidence=0.0,
+        routing_ambiguity=0.0,
+        routing_requires_clarification=False,
         routing_reasoning="",
         retrieved_documents=[],
         relevant_documents=[],

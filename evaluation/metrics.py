@@ -110,6 +110,103 @@ class Evaluator:
         self.workflow = workflow
         self.llm = llm  # For LLM-judge scoring
 
+    def evaluate_supervisor_routing(
+        self,
+        supervisor=None,
+        test_queries: Optional[List] = None,
+    ) -> Dict:
+        """
+        Evaluate only the supervisor/router without running retrieval or CRAG.
+
+        This is the preferred routing benchmark for academic reporting because
+        it isolates intent classification quality from downstream retrieval and
+        generation latency.
+        """
+        if supervisor is None:
+            if self.llm is None:
+                return {
+                    "error": "No supervisor or llm provided for supervisor-only routing evaluation"
+                }
+            from orchestration.supervisor import SupervisorAgent
+            supervisor = SupervisorAgent(self.llm)
+
+        queries = test_queries or ALL_TEST_QUERIES
+        results = []
+        confusion: Dict[str, Dict[str, int]] = {}
+        labels = sorted({q[1] for q in queries} | {"industrial", "recipe", "scientific", "clarify", "fallback"})
+
+        for query, expected_domain, difficulty, desc in queries:
+            start = time.time()
+            routing = supervisor.route(query)
+            latency = time.time() - start
+
+            actual_domain = routing.get("domain", "")
+            is_correct = actual_domain == expected_domain
+            confusion.setdefault(expected_domain, {})
+            confusion[expected_domain][actual_domain] = (
+                confusion[expected_domain].get(actual_domain, 0) + 1
+            )
+
+            results.append({
+                "query": query,
+                "expected": expected_domain,
+                "actual": actual_domain,
+                "correct": is_correct,
+                "confidence": routing.get("confidence", 0.0),
+                "second_domain": routing.get("second_domain", ""),
+                "second_confidence": routing.get("second_confidence", 0.0),
+                "ambiguity": routing.get("ambiguity", 0.0),
+                "requires_clarification": routing.get("requires_clarification", False),
+                "latency": latency,
+                "difficulty": difficulty,
+                "description": desc,
+                "reasoning": routing.get("reasoning", ""),
+            })
+
+        total = len(results)
+        correct = sum(1 for r in results if r["correct"])
+        per_label = {}
+        for label in labels:
+            tp = sum(1 for r in results if r["expected"] == label and r["actual"] == label)
+            fp = sum(1 for r in results if r["expected"] != label and r["actual"] == label)
+            fn = sum(1 for r in results if r["expected"] == label and r["actual"] != label)
+            precision = tp / (tp + fp) if (tp + fp) else 0.0
+            recall = tp / (tp + fn) if (tp + fn) else 0.0
+            f1 = (
+                2 * precision * recall / (precision + recall)
+                if (precision + recall)
+                else 0.0
+            )
+            support = sum(1 for r in results if r["expected"] == label)
+            per_label[label] = {
+                "precision": precision,
+                "recall": recall,
+                "f1": f1,
+                "support": support,
+            }
+
+        macro_f1 = (
+            sum(stats["f1"] for stats in per_label.values()) / len(per_label)
+            if per_label
+            else 0.0
+        )
+        avg_latency = (
+            sum(r["latency"] for r in results) / len(results)
+            if results
+            else 0.0
+        )
+
+        return {
+            "overall_accuracy": correct / total if total else 0.0,
+            "macro_f1": macro_f1,
+            "avg_latency_seconds": avg_latency,
+            "total_queries": total,
+            "correct": correct,
+            "per_label": per_label,
+            "confusion_matrix": confusion,
+            "results": results,
+        }
+
     def evaluate_routing(
         self,
         test_queries: Optional[List] = None,

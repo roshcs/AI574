@@ -103,6 +103,10 @@ def _make_supervisor_node(supervisor: SupervisorAgent):
 
         state["routed_domain"] = routing["domain"]
         state["routing_confidence"] = routing["confidence"]
+        state["second_routed_domain"] = routing.get("second_domain", "")
+        state["second_routing_confidence"] = routing.get("second_confidence", 0.0)
+        state["routing_ambiguity"] = routing.get("ambiguity", 0.0)
+        state["routing_requires_clarification"] = routing.get("requires_clarification", False)
         state["routing_reasoning"] = routing["reasoning"]
         state["status"] = "routing"
 
@@ -394,6 +398,12 @@ def run_query(
         "response": final_state.get("final_response", ""),
         "domain": final_state.get("routed_domain", ""),
         "confidence": final_state.get("routing_confidence", 0.0),
+        "routing_confidence": final_state.get("routing_confidence", 0.0),
+        "second_domain": final_state.get("second_routed_domain", ""),
+        "second_confidence": final_state.get("second_routing_confidence", 0.0),
+        "routing_ambiguity": final_state.get("routing_ambiguity", 0.0),
+        "routing_requires_clarification": final_state.get("routing_requires_clarification", False),
+        "routing_reasoning": final_state.get("routing_reasoning", ""),
         "sources": final_state.get("agent_sources", []),
         "escalated": final_state.get("escalated", False),
         "needs_clarification": final_state.get("needs_clarification", False),

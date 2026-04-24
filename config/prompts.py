@@ -28,6 +28,10 @@ Respond ONLY with valid JSON:
 {{
   "domain": "<industrial|recipe|scientific|clarify|fallback>",
   "confidence": <0.0-1.0>,
+  "second_domain": "<industrial|recipe|scientific|clarify|fallback|null>",
+  "second_confidence": <0.0-1.0>,
+  "ambiguity": <0.0-1.0>,
+  "requires_clarification": <true|false>,
   "reasoning": "<brief explanation of routing decision>"
 }}
 Reply with only that JSON object, on a single line if possible, with no explanation or prefix.

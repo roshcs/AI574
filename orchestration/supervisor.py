@@ -36,6 +36,7 @@ class SupervisorAgent:
         self.llm = llm
         self.threshold = CONFIG.supervisor.routing_confidence_threshold
         self.valid_domains = set(CONFIG.supervisor.domains + ["clarify", "fallback"])
+        self.ambiguity_margin = 0.15
 
     def route(self, query: str) -> Dict:
         """
@@ -45,6 +46,10 @@ class SupervisorAgent:
             {
                 "domain": str,         # target domain or "clarify"/"fallback"
                 "confidence": float,   # 0.0 - 1.0
+                "second_domain": str,
+                "second_confidence": float,
+                "ambiguity": float,
+                "requires_clarification": bool,
                 "reasoning": str,      # explanation
             }
         """
@@ -52,7 +57,8 @@ class SupervisorAgent:
         user_prompt = (
             f'User query: "{query}"\n\n'
             "Output the routing as a single JSON object with keys "
-            '"domain", "confidence", and "reasoning". '
+            '"domain", "confidence", "second_domain", "second_confidence", '
+            '"ambiguity", "requires_clarification", and "reasoning". '
             "Respond with ONLY that JSON object, with no extra text."
         )
 
@@ -106,24 +112,44 @@ class SupervisorAgent:
             domain = "fallback"
 
         # Validate and clamp confidence to [0, 1]
-        try:
-            confidence = float(result.get("confidence", 0.0))
-        except (TypeError, ValueError):
-            confidence = 0.0
-        if not (0.0 <= confidence <= 1.0) or confidence != confidence:  # NaN check
-            logger.warning(f"Confidence out of range ({confidence}), clamping")
-            confidence = max(0.0, min(1.0, confidence)) if confidence == confidence else 0.0
+        confidence = self._coerce_confidence(result.get("confidence", 0.0))
 
-        if confidence < self.threshold and domain not in ("clarify", "fallback"):
+        second_domain = self._coerce_optional_domain(result.get("second_domain"))
+        if second_domain == domain:
+            second_domain = ""
+        second_confidence = self._coerce_confidence(result.get("second_confidence", 0.0))
+        ambiguity = self._coerce_confidence(
+            result.get("ambiguity", self._infer_ambiguity(confidence, second_confidence))
+        )
+        requires_clarification = self._coerce_bool(result.get("requires_clarification", False))
+
+        close_second_choice = (
+            second_domain
+            and domain not in ("clarify", "fallback")
+            and (confidence - second_confidence) < self.ambiguity_margin
+        )
+        if (
+            (confidence < self.threshold or requires_clarification or close_second_choice)
+            and domain not in ("clarify", "fallback")
+        ):
             logger.info(
-                f"Low confidence ({confidence:.2f} < {self.threshold}), "
-                f"switching to clarification"
+                "Routing needs clarification "
+                "(confidence=%.2f, second=%s %.2f, ambiguity=%.2f)",
+                confidence,
+                second_domain or "none",
+                second_confidence,
+                ambiguity,
             )
             domain = "clarify"
+            requires_clarification = True
 
         routing = {
             "domain": domain,
             "confidence": confidence,
+            "second_domain": second_domain,
+            "second_confidence": second_confidence,
+            "ambiguity": ambiguity,
+            "requires_clarification": requires_clarification,
             "reasoning": result.get("reasoning", ""),
         }
 
@@ -151,6 +177,10 @@ class SupervisorAgent:
             '{\n'
             '  \"domain\": \"<one of the above>\",\n'
             "  \"confidence\": <0.0-1.0>,\n"
+            '  \"second_domain\": \"<second-best domain or empty string>\",\n'
+            "  \"second_confidence\": <0.0-1.0>,\n"
+            "  \"ambiguity\": <0.0-1.0>,\n"
+            "  \"requires_clarification\": <true|false>,\n"
             '  \"reasoning\": \"<brief explanation>\"\n'
             "}\n\n"
             f'User query: \"{query}\"'
@@ -172,5 +202,46 @@ class SupervisorAgent:
         return {
             "domain": "fallback",
             "confidence": 0.0,
+            "second_domain": "",
+            "second_confidence": 0.0,
+            "ambiguity": 1.0,
+            "requires_clarification": False,
             "reasoning": "Routing failed — using web search fallback",
         }
+
+    @staticmethod
+    def _coerce_confidence(value) -> float:
+        """Convert model-provided numeric fields to a bounded [0, 1] float."""
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if not (0.0 <= confidence <= 1.0) or confidence != confidence:  # NaN check
+            logger.warning("Confidence out of range (%s), clamping", confidence)
+            return max(0.0, min(1.0, confidence)) if confidence == confidence else 0.0
+        return confidence
+
+    def _coerce_optional_domain(self, value) -> str:
+        """Return a valid optional domain or empty string."""
+        if value in (None, "", "null"):
+            return ""
+        domain = str(value)
+        if domain not in self.valid_domains:
+            logger.warning("Invalid second_domain '%s', ignoring", domain)
+            return ""
+        return domain
+
+    @staticmethod
+    def _coerce_bool(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes"}
+        return bool(value)
+
+    @staticmethod
+    def _infer_ambiguity(confidence: float, second_confidence: float) -> float:
+        """Estimate ambiguity when the LLM does not provide one."""
+        if second_confidence <= 0:
+            return max(0.0, 1.0 - confidence)
+        return max(0.0, min(1.0, 1.0 - abs(confidence - second_confidence)))

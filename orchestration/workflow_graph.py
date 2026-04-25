@@ -8,9 +8,14 @@ into a complete executable workflow.
         ├─ industrial → industrial_node → finalize
         ├─ recipe → recipe_node → finalize
         ├─ scientific → scientific_node → finalize
+        ├─ synthesis → synthesis_node → finalize    (cross-domain fusion)
         ├─ clarify → clarify_node → END
-        └─ fallback → fallback_node → finalize
+        └─ fallback → web_search_node → finalize    (live web search)
     finalize → END
+
+The synthesis route is opt-in via ``runtime_options['enable_synthesis']``;
+when enabled, the router upgrades a "clarify" decision to "synthesis" if the
+supervisor produced two real specialist domains as candidates.
 
 Usage:
     from orchestration.workflow_graph import build_workflow, run_query
@@ -37,6 +42,8 @@ from orchestration.supervisor import SupervisorAgent
 from rag_core.crag_pipeline import CRAGPipeline
 from foundation.vector_store import VectorStoreService
 from ingestion.index_builder import IndexBuilder
+from agents.synthesis_agent import SynthesisAgent
+from agents.web_search_agent import WebSearchAgent
 from config.settings import CONFIG, DEFAULT_MODEL_ID
 
 logger = logging.getLogger(__name__)
@@ -54,20 +61,33 @@ RUN_PROFILES: Dict[str, Dict] = {
         "max_rewrite_attempts": None,
         "skip_hallucination_check": None,
         "generate_max_new_tokens": None,
+        "enable_synthesis": None,
     },
     "fast_interactive": {
         "k": 3,
         "max_rewrite_attempts": 0,
         "skip_hallucination_check": True,
         "generate_max_new_tokens": 256,
+        "enable_synthesis": None,
     },
 }
 
+# enable_synthesis is a workflow-level routing toggle, not a CRAG runtime option.
+# Keep it separate so we don't accidentally pass it into CRAGPipeline.run().
+_CRAG_RUNTIME_OPTION_KEYS = frozenset({
+    "k", "max_rewrite_attempts", "skip_hallucination_check", "generate_max_new_tokens",
+})
 _RUNTIME_OPTION_KEYS = frozenset(RUN_PROFILES["best_quality"].keys())
 
 
 def _resolve_run_options(mode: str, options: Optional[Dict] = None) -> Dict:
-    """Merge a named profile with optional per-call overrides."""
+    """Merge a named profile with optional per-call overrides.
+
+    Profile values of ``None`` mean "fall through to per-call override or
+    upstream default". For boolean toggles (e.g. ``enable_synthesis``), an
+    omitted/None value resolves to ``False`` so the workflow defaults stay
+    safe.
+    """
     if mode not in RUN_PROFILES:
         raise ValueError(
             f"Unknown run mode '{mode}'. Choose from: {sorted(RUN_PROFILES)}"
@@ -78,7 +98,10 @@ def _resolve_run_options(mode: str, options: Optional[Dict] = None) -> Dict:
         if unknown:
             logger.warning("Ignoring unknown runtime options: %s", unknown)
         merged.update({k: v for k, v in options.items() if k in _RUNTIME_OPTION_KEYS})
-    return {k: v for k, v in merged.items() if v is not None}
+    resolved = {k: v for k, v in merged.items() if v is not None}
+    # enable_synthesis is a boolean toggle: explicit absence → False.
+    resolved.setdefault("enable_synthesis", False)
+    return resolved
 
 
 def _import_class(dotted_path: str):
@@ -108,10 +131,25 @@ def _make_supervisor_node(supervisor: SupervisorAgent):
         state["routing_ambiguity"] = routing.get("ambiguity", 0.0)
         state["routing_requires_clarification"] = routing.get("requires_clarification", False)
         state["routing_reasoning"] = routing["reasoning"]
+        state["primary_candidate_domain"] = routing.get(
+            "primary_candidate_domain", routing["domain"]
+        )
+        state["primary_candidate_confidence"] = routing.get(
+            "primary_candidate_confidence", routing["confidence"]
+        )
+        state["synthesis_candidate_domains"] = routing.get(
+            "synthesis_candidate_domains", []
+        )
         state["status"] = "routing"
 
         return state
     return supervisor_node
+
+
+def _crag_runtime_opts(state: AgentState) -> Dict:
+    """Filter the workflow runtime options down to CRAG-safe kwargs."""
+    runtime_opts = state.get("runtime_options") or {}
+    return {k: v for k, v in runtime_opts.items() if k in _CRAG_RUNTIME_OPTION_KEYS}
 
 
 def _make_agent_node(agent, domain_name: str):
@@ -120,10 +158,10 @@ def _make_agent_node(agent, domain_name: str):
         query = state["user_query"]
         state["status"] = "processing"
 
-        runtime_opts = state.get("runtime_options") or {}
+        crag_opts = _crag_runtime_opts(state)
 
         t0 = time.perf_counter()
-        result = agent.handle(query, **runtime_opts)
+        result = agent.handle(query, **crag_opts)
         elapsed = time.perf_counter() - t0
         state["timing_agent_s"] = elapsed
         state["timing_crag_breakdown"] = getattr(result, "timing_breakdown", {})
@@ -138,6 +176,106 @@ def _make_agent_node(agent, domain_name: str):
 
         return state
     return agent_node
+
+
+def _make_synthesis_node(synthesis_agent: SynthesisAgent):
+    """Create a cross-domain synthesis node."""
+    def synthesis_node(state: AgentState) -> AgentState:
+        query = state["user_query"]
+        state["status"] = "processing"
+
+        candidates = state.get("synthesis_candidate_domains") or []
+        if len(candidates) < 2:
+            # Defensive: router should have filtered this, but if not, escalate.
+            state["agent_response"] = (
+                "Cross-domain synthesis was requested but the supervisor did "
+                "not produce two specialist-domain candidates. Falling back to "
+                "the clarification path."
+            )
+            state["agent_sources"] = []
+            state["agent_confidence"] = 0.0
+            state["agent_grounded"] = False
+            state["escalated"] = True
+            state["escalation_reason"] = "Insufficient synthesis candidates"
+            return state
+
+        crag_opts = _crag_runtime_opts(state)
+        # Avoid k blowing up across N domains: cap with a per-domain default.
+        if "k" not in crag_opts:
+            crag_opts["k"] = 3
+
+        t0 = time.perf_counter()
+        result = synthesis_agent.handle(query, domains=candidates, **crag_opts)
+        elapsed = time.perf_counter() - t0
+        state["timing_agent_s"] = elapsed
+        logger.info(
+            "⏱ Agent (synthesis over %s): %.1fs", "+".join(candidates), elapsed
+        )
+
+        # Per-domain CRAG timing breakdown is stored separately.
+        state["timing_crag_breakdown"] = {
+            "total_s": elapsed,
+            "per_domain_s": result.get("per_domain_timings", {}),
+        }
+
+        state["agent_response"] = result["response"]
+        state["agent_sources"] = result["sources"]
+        state["agent_confidence"] = 1.0 if not result["escalated"] else 0.0
+        state["agent_grounded"] = not result["escalated"]
+        state["escalated"] = result["escalated"]
+        state["escalation_reason"] = result.get("escalation_reason", "")
+
+        # Surface synthesis-specific metadata
+        per_domain = result.get("per_domain_results", {}) or {}
+        state["synthesis_per_domain"] = {
+            domain: {
+                "response": (cr.response or "")[:400],
+                "confidence": cr.confidence,
+                "escalated": cr.escalated,
+                "escalation_reason": cr.escalation_reason,
+                "num_sources": len(cr.sources or []),
+            }
+            for domain, cr in per_domain.items()
+        }
+        state["synthesis_domains_used"] = result.get("domains_in_synthesis", [])
+
+        return state
+    return synthesis_node
+
+
+def _make_web_search_node(web_agent: WebSearchAgent):
+    """Create the live web-search fallback node."""
+    def web_search_node(state: AgentState) -> AgentState:
+        query = state["user_query"]
+        state["status"] = "processing"
+
+        t0 = time.perf_counter()
+        result = web_agent.handle(query)
+        elapsed = time.perf_counter() - t0
+        state["timing_agent_s"] = elapsed
+        logger.info(
+            "⏱ Agent (web_search/%s): %.1fs (results=%d)",
+            web_agent.provider,
+            elapsed,
+            result.get("num_results", 0),
+        )
+        state["timing_crag_breakdown"] = {
+            "total_s": elapsed,
+            "search_s": result.get("timing", {}).get("search_s", 0.0),
+            "generate_s": result.get("timing", {}).get("generate_s", 0.0),
+        }
+
+        state["agent_response"] = result["response"]
+        state["agent_sources"] = result["sources"]
+        state["agent_confidence"] = 0.6 if not result["escalated"] else 0.0
+        state["agent_grounded"] = not result["escalated"]
+        state["escalated"] = result["escalated"]
+        state["escalation_reason"] = result.get("escalation_reason", "")
+        state["web_search_provider"] = result.get("provider", web_agent.provider)
+        state["web_search_num_results"] = result.get("num_results", 0)
+
+        return state
+    return web_search_node
 
 
 def _make_clarify_node(supervisor: SupervisorAgent):
@@ -160,20 +298,6 @@ def _make_clarify_node(supervisor: SupervisorAgent):
 
         return state
     return clarify_node
-
-
-def _make_fallback_node(llm):
-    """Create the web-search fallback node."""
-    def fallback_node(state: AgentState) -> AgentState:
-        # In a full implementation, this would use Tavily Search API
-        state["final_response"] = (
-            "This question falls outside my specialized domains "
-            "(industrial troubleshooting, recipes, and scientific papers). "
-            "I'd recommend searching the web for more information on this topic."
-        )
-        state["status"] = "complete"
-        return state
-    return fallback_node
 
 
 def finalize_node(state: AgentState) -> AgentState:
@@ -201,13 +325,35 @@ def finalize_node(state: AgentState) -> AgentState:
 # ── Routing Logic ─────────────────────────────────────────────────────────────
 
 def _route_decision(state: AgentState) -> str:
-    """Conditional edge: route to the appropriate agent node."""
+    """Conditional edge: route to the appropriate agent node.
+
+    Adds two routing features on top of the supervisor's chosen ``domain``:
+
+    1. **Cross-domain synthesis upgrade.** When the supervisor returned
+       ``"clarify"`` because two specialist domains were tied, and the caller
+       opted in via ``runtime_options['enable_synthesis']=True``, we route to
+       the synthesis node instead of asking the user a clarifying question.
+
+    2. **Live web-search fallback.** ``"fallback"`` routes to the
+       ``web_search`` node, which does a real search instead of refusing.
+    """
     domain = state.get("routed_domain", "fallback")
 
-    valid_routes = {spec.name for spec in CONFIG.supervisor.domain_registry}
-    valid_routes |= {"clarify", "fallback"}
+    runtime_opts = state.get("runtime_options") or {}
+    enable_synthesis = bool(runtime_opts.get("enable_synthesis", False))
+    candidates = state.get("synthesis_candidate_domains") or []
+
+    if enable_synthesis and domain == "clarify" and len(candidates) >= 2:
+        logger.info(
+            "Routing upgraded clarify -> synthesis over %s",
+            "+".join(candidates),
+        )
+        return "synthesis"
+
+    valid_specialist_routes = {spec.name for spec in CONFIG.supervisor.domain_registry}
+    valid_routes = valid_specialist_routes | {"clarify", "fallback"}
     if domain not in valid_routes:
-        logger.warning(f"Unknown domain '{domain}', routing to fallback")
+        logger.warning(f"Unknown domain '{domain}', routing to web_search fallback")
         return "fallback"
 
     return domain
@@ -219,6 +365,7 @@ def build_workflow(
     llm,
     vector_store: VectorStoreService,
     index_builder: Optional[IndexBuilder] = None,
+    web_search_provider: str = "auto",
 ) -> StateGraph:
     """
     Build and compile the complete LangGraph workflow.
@@ -227,6 +374,8 @@ def build_workflow(
         llm: LangChain-compatible chat model.
         vector_store: Initialized VectorStoreService.
         index_builder: Optional IndexBuilder for on-demand ArXiv fetching.
+        web_search_provider: Web-search provider for the fallback node
+            (``"auto"`` | ``"tavily"`` | ``"ddgs"`` | ``"none"``).
 
     Returns:
         Compiled LangGraph StateGraph ready for invocation.
@@ -234,6 +383,8 @@ def build_workflow(
     # Initialize components
     supervisor = SupervisorAgent(llm)
     crag = CRAGPipeline(llm, vector_store)
+    synthesis_agent = SynthesisAgent(crag, llm)
+    web_agent = WebSearchAgent(llm, provider=web_search_provider)
 
     # Build graph
     graph = StateGraph(AgentState)
@@ -252,18 +403,21 @@ def build_workflow(
         routing_map[spec.name] = spec.name
 
     graph.add_node("clarify", _make_clarify_node(supervisor))
-    graph.add_node("fallback", _make_fallback_node(llm))
+    graph.add_node("synthesis", _make_synthesis_node(synthesis_agent))
+    graph.add_node("fallback", _make_web_search_node(web_agent))
     graph.add_node("finalize", finalize_node)
 
     graph.set_entry_point("supervisor")
 
     routing_map["clarify"] = "clarify"
+    routing_map["synthesis"] = "synthesis"
     routing_map["fallback"] = "fallback"
     graph.add_conditional_edges("supervisor", _route_decision, routing_map)
 
     # Domain agent nodes → finalize
     for spec in CONFIG.supervisor.domain_registry:
         graph.add_edge(spec.name, "finalize")
+    graph.add_edge("synthesis", "finalize")
     graph.add_edge("fallback", "finalize")
 
     # Clarify and finalize → END
@@ -276,8 +430,12 @@ def build_workflow(
     # Stash references so run_query can rebuild for a different model_id
     compiled._ai574_vector_store = vector_store
     compiled._ai574_index_builder = index_builder
+    compiled._ai574_web_search_provider = web_search_provider
 
-    logger.info("Workflow graph compiled successfully")
+    logger.info(
+        "Workflow graph compiled successfully (web_search=%s)",
+        web_agent.provider,
+    )
     return compiled
 
 
@@ -306,6 +464,7 @@ def _resolve_workflow(
 
     vector_store = getattr(workflow, "_ai574_vector_store", None)
     index_builder = getattr(workflow, "_ai574_index_builder", None)
+    web_search_provider = getattr(workflow, "_ai574_web_search_provider", "auto")
 
     if vector_store is None:
         raise RuntimeError(
@@ -314,7 +473,12 @@ def _resolve_workflow(
             "build_workflow() was used to create the workflow."
         )
 
-    new_wf = build_workflow(llm, vector_store, index_builder)
+    new_wf = build_workflow(
+        llm,
+        vector_store,
+        index_builder,
+        web_search_provider=web_search_provider,
+    )
     _workflow_cache[model_id] = new_wf
     logger.info("Built and cached workflow for model_id='%s'", model_id)
     return new_wf
@@ -404,6 +568,13 @@ def run_query(
         "routing_ambiguity": final_state.get("routing_ambiguity", 0.0),
         "routing_requires_clarification": final_state.get("routing_requires_clarification", False),
         "routing_reasoning": final_state.get("routing_reasoning", ""),
+        "primary_candidate_domain": final_state.get("primary_candidate_domain", ""),
+        "primary_candidate_confidence": final_state.get("primary_candidate_confidence", 0.0),
+        "synthesis_candidate_domains": final_state.get("synthesis_candidate_domains", []),
+        "synthesis_per_domain": final_state.get("synthesis_per_domain", {}),
+        "synthesis_domains_used": final_state.get("synthesis_domains_used", []),
+        "web_search_provider": final_state.get("web_search_provider", ""),
+        "web_search_num_results": final_state.get("web_search_num_results", 0),
         "sources": final_state.get("agent_sources", []),
         "escalated": final_state.get("escalated", False),
         "needs_clarification": final_state.get("needs_clarification", False),

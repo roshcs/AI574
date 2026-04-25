@@ -51,6 +51,9 @@ class SupervisorAgent:
                 "ambiguity": float,
                 "requires_clarification": bool,
                 "reasoning": str,      # explanation
+                "primary_candidate_domain": str,         # original primary BEFORE clarify override
+                "primary_candidate_confidence": float,
+                "synthesis_candidate_domains": list[str],  # real domains worth synthesising
             }
         """
         system_msg = SystemMessage(content=SUPERVISOR_SYSTEM_PROMPT)
@@ -128,6 +131,14 @@ class SupervisorAgent:
             and domain not in ("clarify", "fallback")
             and (confidence - second_confidence) < self.ambiguity_margin
         )
+
+        # Preserve the original primary domain BEFORE we possibly override it
+        # to "clarify". This lets downstream consumers (e.g. the synthesis
+        # agent) recover the supervisor's actual two top candidates even when
+        # the routing decision was "ask the user".
+        primary_candidate_domain = domain
+        primary_candidate_confidence = confidence
+
         if (
             (confidence < self.threshold or requires_clarification or close_second_choice)
             and domain not in ("clarify", "fallback")
@@ -143,6 +154,10 @@ class SupervisorAgent:
             domain = "clarify"
             requires_clarification = True
 
+        synthesis_candidate_domains = self._build_synthesis_candidates(
+            primary_candidate_domain, second_domain
+        )
+
         routing = {
             "domain": domain,
             "confidence": confidence,
@@ -151,6 +166,9 @@ class SupervisorAgent:
             "ambiguity": ambiguity,
             "requires_clarification": requires_clarification,
             "reasoning": result.get("reasoning", ""),
+            "primary_candidate_domain": primary_candidate_domain,
+            "primary_candidate_confidence": primary_candidate_confidence,
+            "synthesis_candidate_domains": synthesis_candidate_domains,
         }
 
         logger.info(
@@ -207,6 +225,9 @@ class SupervisorAgent:
             "ambiguity": 1.0,
             "requires_clarification": False,
             "reasoning": "Routing failed — using web search fallback",
+            "primary_candidate_domain": "fallback",
+            "primary_candidate_confidence": 0.0,
+            "synthesis_candidate_domains": [],
         }
 
     @staticmethod
@@ -245,3 +266,21 @@ class SupervisorAgent:
         if second_confidence <= 0:
             return max(0.0, 1.0 - confidence)
         return max(0.0, min(1.0, 1.0 - abs(confidence - second_confidence)))
+
+    @staticmethod
+    def _build_synthesis_candidates(
+        primary: str, second: str
+    ) -> list:
+        """Return ordered, distinct list of *real* domains worth synthesising.
+
+        Excludes pseudo-routes ("clarify", "fallback") and de-dupes. The
+        cross-domain synthesis agent only makes sense when both candidates
+        are real specialist domains.
+        """
+        pseudo = {"clarify", "fallback", ""}
+        out: list = []
+        for cand in (primary, second):
+            if cand in pseudo or cand in out:
+                continue
+            out.append(cand)
+        return out if len(out) >= 2 else []

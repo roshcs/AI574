@@ -26,13 +26,16 @@ class AgentState(TypedDict, total=False):
     conversation_history: List[BaseMessage]  # Full conversation context
 
     # ── Routing ───────────────────────────────────────────────────────────
-    routed_domain: str                       # "industrial" | "recipe" | "scientific" | "clarify" | "fallback"
+    routed_domain: str                       # "industrial" | "recipe" | "scientific" | "clarify" | "fallback" | "synthesis"
     routing_confidence: float                # 0.0 - 1.0
     second_routed_domain: str                # second-best route, when available
     second_routing_confidence: float         # 0.0 - 1.0
     routing_ambiguity: float                 # 0.0 - 1.0
     routing_requires_clarification: bool     # LLM/router ambiguity signal
     routing_reasoning: str                   # Why this domain was chosen
+    primary_candidate_domain: str            # original primary BEFORE clarify override
+    primary_candidate_confidence: float      # confidence of original primary
+    synthesis_candidate_domains: List[str]   # real domains the synthesis agent should fuse
 
     # ── RAG State ─────────────────────────────────────────────────────────
     retrieved_documents: List[Dict]          # Raw retrieved docs
@@ -45,6 +48,12 @@ class AgentState(TypedDict, total=False):
     agent_sources: List[Dict]                # Source attribution
     agent_confidence: float                  # Response confidence score
     agent_grounded: bool                     # Hallucination check result
+
+    # ── Synthesis / Web-search Extras ────────────────────────────────────
+    synthesis_per_domain: Dict               # per-domain CRAG breakdown when synthesis ran
+    synthesis_domains_used: List[str]        # domains actually fused into the synthesis answer
+    web_search_provider: str                 # "tavily" | "ddgs" | "none" when fallback ran
+    web_search_num_results: int              # number of web snippets used
 
     # ── Control Flow ──────────────────────────────────────────────────────
     escalated: bool                          # Whether agent escalated back
@@ -80,6 +89,9 @@ def create_initial_state(
         routing_ambiguity=0.0,
         routing_requires_clarification=False,
         routing_reasoning="",
+        primary_candidate_domain="",
+        primary_candidate_confidence=0.0,
+        synthesis_candidate_domains=[],
         retrieved_documents=[],
         relevant_documents=[],
         current_query=query,
@@ -88,6 +100,10 @@ def create_initial_state(
         agent_sources=[],
         agent_confidence=0.0,
         agent_grounded=True,
+        synthesis_per_domain={},
+        synthesis_domains_used=[],
+        web_search_provider="",
+        web_search_num_results=0,
         escalated=False,
         escalation_reason="",
         needs_clarification=False,

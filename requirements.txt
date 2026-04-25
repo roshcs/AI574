@@ -25,4 +25,7 @@ langchain-google-genai>=2.0.0  # model_id="gemini_flash" / "gemini_pro"
 # langchain-groq>=0.2.0          # model_id="groq_llama"
 
 # ── Optional: Web Search Fallback ─────────────────────────────────────────────
+# Used by agents/web_search_agent.py. Either provider works; ``WebSearchAgent``
+# auto-selects Tavily when TAVILY_API_KEY is set, else falls back to DuckDuckGo.
 # tavily-python>=0.3.0           # Uncomment if using Tavily search fallback
+# ddgs>=6.0.0                    # No API key required; install for DDGS fallback

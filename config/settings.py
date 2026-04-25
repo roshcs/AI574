@@ -116,6 +116,15 @@ class DomainSpec:
 class SupervisorConfig:
     """Configuration for the supervisor/router agent."""
     routing_confidence_threshold: float = 0.75       # below → clarify
+    hybrid_router_enabled: bool = os.getenv("HYBRID_ROUTER_ENABLED", "true").lower() in {
+        "1", "true", "yes"
+    }
+    hybrid_router_confidence_threshold: float = float(
+        os.getenv("HYBRID_ROUTER_CONFIDENCE_THRESHOLD", "0.85")
+    )
+    hybrid_router_margin_threshold: float = float(
+        os.getenv("HYBRID_ROUTER_MARGIN_THRESHOLD", "0.20")
+    )
     domains: list = field(default_factory=lambda: [
         "industrial", "recipe", "scientific"
     ])

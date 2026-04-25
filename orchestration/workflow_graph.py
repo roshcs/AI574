@@ -131,6 +131,9 @@ def _make_supervisor_node(supervisor: SupervisorAgent):
         state["routing_ambiguity"] = routing.get("ambiguity", 0.0)
         state["routing_requires_clarification"] = routing.get("requires_clarification", False)
         state["routing_reasoning"] = routing["reasoning"]
+        state["routing_source"] = routing.get("routing_source", "llm_supervisor")
+        state["classifier_margin"] = routing.get("classifier_margin", 0.0)
+        state["classifier_scores"] = routing.get("classifier_scores", {})
         state["primary_candidate_domain"] = routing.get(
             "primary_candidate_domain", routing["domain"]
         )
@@ -568,6 +571,9 @@ def run_query(
         "routing_ambiguity": final_state.get("routing_ambiguity", 0.0),
         "routing_requires_clarification": final_state.get("routing_requires_clarification", False),
         "routing_reasoning": final_state.get("routing_reasoning", ""),
+        "routing_source": final_state.get("routing_source", ""),
+        "classifier_margin": final_state.get("classifier_margin", 0.0),
+        "classifier_scores": final_state.get("classifier_scores", {}),
         "primary_candidate_domain": final_state.get("primary_candidate_domain", ""),
         "primary_candidate_confidence": final_state.get("primary_candidate_confidence", 0.0),
         "synthesis_candidate_domains": final_state.get("synthesis_candidate_domains", []),

@@ -28,7 +28,7 @@ class TestSupervisorRichRouting(unittest.TestCase):
             "requires_clarification": False,
             "reasoning": "Ingredient substitution request",
         })
-        supervisor = SupervisorAgent(llm)
+        supervisor = SupervisorAgent(llm, enable_hybrid_router=False)
 
         routing = supervisor.route("What can I substitute for eggs?")
 
@@ -48,7 +48,7 @@ class TestSupervisorRichRouting(unittest.TestCase):
             "requires_clarification": False,
             "reasoning": "Could be oven cooking or equipment calibration",
         })
-        supervisor = SupervisorAgent(llm)
+        supervisor = SupervisorAgent(llm, enable_hybrid_router=False)
 
         routing = supervisor.route("How do I calibrate my oven thermometer?")
 
@@ -104,6 +104,43 @@ class TestSupervisorRoutingBenchmark(unittest.TestCase):
         self.assertEqual(result["overall_accuracy"], 1.0)
         self.assertIn("macro_f1", result)
         self.assertEqual(result["confusion_matrix"]["industrial"]["industrial"], 1)
+
+
+class TestHybridSupervisorRouter(unittest.TestCase):
+    def test_high_confidence_classifier_route_skips_llm(self):
+        llm = _mock_llm({
+            "domain": "recipe",
+            "confidence": 0.99,
+            "reasoning": "should not be called",
+        })
+        supervisor = SupervisorAgent(llm, enable_hybrid_router=True)
+
+        routing = supervisor.route("PowerFlex 525 fault F002 undervoltage on motor drive")
+
+        self.assertEqual(routing["domain"], "industrial")
+        self.assertEqual(routing["routing_source"], "hybrid_classifier")
+        self.assertGreaterEqual(routing["confidence"], 0.85)
+        self.assertGreaterEqual(routing["classifier_margin"], 0.20)
+        llm.invoke_and_parse_json.assert_not_called()
+
+    def test_low_margin_classifier_route_escalates_to_llm(self):
+        llm = _mock_llm({
+            "domain": "clarify",
+            "confidence": 0.72,
+            "second_domain": "industrial",
+            "second_confidence": 0.70,
+            "ambiguity": 0.92,
+            "requires_clarification": True,
+            "reasoning": "Could be cooking temperature or equipment calibration",
+        })
+        supervisor = SupervisorAgent(llm, enable_hybrid_router=True)
+
+        routing = supervisor.route("How do I calibrate my oven thermometer?")
+
+        self.assertEqual(routing["domain"], "clarify")
+        self.assertEqual(routing["routing_source"], "llm_supervisor")
+        self.assertTrue(routing["requires_clarification"])
+        llm.invoke_and_parse_json.assert_called_once()
 
 
 if __name__ == "__main__":

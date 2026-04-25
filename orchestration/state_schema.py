@@ -33,6 +33,9 @@ class AgentState(TypedDict, total=False):
     routing_ambiguity: float                 # 0.0 - 1.0
     routing_requires_clarification: bool     # LLM/router ambiguity signal
     routing_reasoning: str                   # Why this domain was chosen
+    routing_source: str                      # "hybrid_classifier" | "llm_supervisor" | "fallback"
+    classifier_margin: float                 # top-vs-second margin from hybrid classifier
+    classifier_scores: Dict[str, float]      # raw hybrid classifier scores
     primary_candidate_domain: str            # original primary BEFORE clarify override
     primary_candidate_confidence: float      # confidence of original primary
     synthesis_candidate_domains: List[str]   # real domains the synthesis agent should fuse
@@ -89,6 +92,9 @@ def create_initial_state(
         routing_ambiguity=0.0,
         routing_requires_clarification=False,
         routing_reasoning="",
+        routing_source="",
+        classifier_margin=0.0,
+        classifier_scores={},
         primary_candidate_domain="",
         primary_candidate_confidence=0.0,
         synthesis_candidate_domains=[],

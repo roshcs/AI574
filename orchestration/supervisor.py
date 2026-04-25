@@ -14,12 +14,13 @@ Usage:
 from __future__ import annotations
 
 import logging
-from typing import Dict
+from typing import Dict, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from config.prompts import SUPERVISOR_SYSTEM_PROMPT
 from config.settings import CONFIG
+from orchestration.hybrid_router import LexicalDomainClassifier
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +33,25 @@ class SupervisorAgent:
     Uses few-shot prompting and confidence scoring.
     """
 
-    def __init__(self, llm):
+    def __init__(
+        self,
+        llm,
+        hybrid_router: Optional[LexicalDomainClassifier] = None,
+        enable_hybrid_router: Optional[bool] = None,
+    ):
         self.llm = llm
         self.threshold = CONFIG.supervisor.routing_confidence_threshold
         self.valid_domains = set(CONFIG.supervisor.domains + ["clarify", "fallback"])
         self.ambiguity_margin = 0.15
+        self.enable_hybrid_router = (
+            CONFIG.supervisor.hybrid_router_enabled
+            if enable_hybrid_router is None
+            else enable_hybrid_router
+        )
+        self.hybrid_router = hybrid_router or LexicalDomainClassifier(
+            confidence_threshold=CONFIG.supervisor.hybrid_router_confidence_threshold,
+            margin_threshold=CONFIG.supervisor.hybrid_router_margin_threshold,
+        )
 
     def route(self, query: str) -> Dict:
         """
@@ -56,6 +71,11 @@ class SupervisorAgent:
                 "synthesis_candidate_domains": list[str],  # real domains worth synthesising
             }
         """
+        if self.enable_hybrid_router:
+            hybrid_routing = self._route_with_hybrid_classifier(query)
+            if hybrid_routing is not None:
+                return hybrid_routing
+
         system_msg = SystemMessage(content=SUPERVISOR_SYSTEM_PROMPT)
         user_prompt = (
             f'User query: "{query}"\n\n'
@@ -78,7 +98,7 @@ class SupervisorAgent:
                     return backup
                 return self._fallback_routing(query)
 
-            return self._build_routing_from_result(result, query)
+            return self._build_routing_from_result(result, query, source="llm_supervisor")
 
         except Exception as e:
             logger.error("Supervisor routing failed: %s: %s", type(e).__name__, str(e)[:80])
@@ -107,7 +127,50 @@ class SupervisorAgent:
                 "cooking/recipes, or scientific research?"
             )
 
-    def _build_routing_from_result(self, result: Dict, query: str) -> Dict:
+    def _route_with_hybrid_classifier(self, query: str) -> Dict | None:
+        """
+        Fast first-pass routing for obvious single-domain queries.
+
+        Returns a complete routing dictionary when the classifier is confident.
+        Returns None when the query should be escalated to the LLM supervisor.
+        """
+        prediction = self.hybrid_router.predict(query)
+        if not prediction.accepted or prediction.domain not in self.valid_domains:
+            logger.info("Hybrid router escalated to LLM: %s", prediction.reason)
+            return None
+
+        ambiguity = self._infer_ambiguity(
+            prediction.confidence, prediction.second_confidence
+        )
+        routing = {
+            "domain": prediction.domain,
+            "confidence": prediction.confidence,
+            "second_domain": prediction.second_domain,
+            "second_confidence": prediction.second_confidence,
+            "ambiguity": ambiguity,
+            "requires_clarification": False,
+            "reasoning": prediction.reason,
+            "primary_candidate_domain": prediction.domain,
+            "primary_candidate_confidence": prediction.confidence,
+            "synthesis_candidate_domains": [],
+            "routing_source": "hybrid_classifier",
+            "classifier_margin": prediction.margin,
+            "classifier_scores": prediction.scores,
+        }
+        logger.info(
+            "Hybrid router accepted '%s' (confidence=%.2f, margin=%.2f)",
+            prediction.domain,
+            prediction.confidence,
+            prediction.margin,
+        )
+        return routing
+
+    def _build_routing_from_result(
+        self,
+        result: Dict,
+        query: str,
+        source: str = "llm_supervisor",
+    ) -> Dict:
         """Common post-processing for LLM routing JSON."""
         domain = result.get("domain", "fallback")
         if domain not in self.valid_domains:
@@ -169,6 +232,9 @@ class SupervisorAgent:
             "primary_candidate_domain": primary_candidate_domain,
             "primary_candidate_confidence": primary_candidate_confidence,
             "synthesis_candidate_domains": synthesis_candidate_domains,
+            "routing_source": source,
+            "classifier_margin": 0.0,
+            "classifier_scores": {},
         }
 
         logger.info(
@@ -209,7 +275,7 @@ class SupervisorAgent:
             if "error" in result:
                 logger.warning("Simple supervisor prompt parse failed")
                 return None
-            return self._build_routing_from_result(result, query)
+            return self._build_routing_from_result(result, query, source="llm_supervisor")
         except Exception as e:
             logger.error("Simple supervisor routing failed: %s: %s", type(e).__name__, str(e)[:80])
             return None
@@ -228,6 +294,9 @@ class SupervisorAgent:
             "primary_candidate_domain": "fallback",
             "primary_candidate_confidence": 0.0,
             "synthesis_candidate_domains": [],
+            "routing_source": "fallback",
+            "classifier_margin": 0.0,
+            "classifier_scores": {},
         }
 
     @staticmethod

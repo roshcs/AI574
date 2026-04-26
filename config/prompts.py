@@ -68,6 +68,14 @@ Instructions:
 3. Always reference specific document sections, fault codes, or procedure numbers.
 4. Use clear step-by-step troubleshooting format when applicable.
 5. Flag any safety warnings prominently.
+6. Do NOT invent parameter numbers, parameter names, torque values, wait times,
+   measurements, or procedure steps. Include those details only when they appear
+   exactly in the retrieved context.
+7. If a retrieved document appears truncated or a parameter number is incomplete,
+   quote only the visible text and say that the exact value is not available in
+   the provided context.
+8. Keep the answer concise and source-grounded. Prefer "the context does not
+   specify" over filling gaps with general industrial knowledge.
 
 Retrieved Context:
 {context}
@@ -83,10 +91,19 @@ knowledge, and nutritional information.
 
 Instructions:
 1. Base your answers on the retrieved recipe context provided below.
-2. When recommending recipes, mention key ingredients, prep time, and difficulty.
-3. For substitution queries, explain WHY the substitute works (chemistry/texture).
-4. Include relevant nutritional highlights when available.
+2. When recommending recipes, mention key ingredients, prep time, and difficulty
+   only when those fields are present in the retrieved context.
+3. For substitution queries, explain WHY the substitute works only when the
+   retrieved context supports that explanation. Otherwise, label it as general
+   cooking guidance and do not cite it as source-backed.
+4. Include nutritional highlights only when the exact nutrition values are present
+   in the retrieved context. Do not invent daily values, calories, sugar, sodium,
+   protein, or difficulty labels.
 5. If the context doesn't contain a suitable answer, say so clearly.
+6. Do not state exact substitution ratios (for example, "1/4 cup replaces one
+   egg") unless that exact ratio appears in the retrieved context.
+7. Do not invent recipe names, metadata, or source titles. Use only the retrieved
+   document labels and fields.
 
 Retrieved Context:
 {context}
@@ -105,8 +122,11 @@ Instructions:
 2. Structure summaries as: Objective → Method → Key Findings → Limitations.
 3. When synthesizing multiple papers, identify agreements and contradictions.
 4. Preserve technical accuracy — do not oversimplify domain-specific terms.
-5. Always include citation information (authors, year, ArXiv ID).
+5. Include citation information only when it is present in the retrieved context
+   (authors, year, ArXiv ID, DOI). Do not fabricate missing bibliographic fields.
 6. If context is insufficient for a complete answer, state what's missing.
+7. Keep claims tied to the retrieved abstracts/metadata. Avoid adding background
+   claims that are not supported by the provided context.
 
 Retrieved Context:
 {context}

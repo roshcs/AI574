@@ -113,13 +113,24 @@ _**Speaker assignment:** Dhruv presents slides 1–8. Rosh presents slides 9–1
 
 ## Slide 10 — Models, Selection, and Parameters
 
-**Speaker: Rosh** · ~60s
+**Speaker: Rosh** · ~75s
 
-> "For the language model, we use Gemini 2.5 Flash as the primary, with Gemma 3 12B as a local failover when the API isn't reachable — the same active model handles supervisor routing, document grading, query rewriting, synthesis, fallback, and final response generation. For embeddings, GTE-Large with 1024-dimensional vectors. The vector store is ChromaDB with separate collections per domain. We hold model weights fixed; reliability comes from retrieval grading, domain prompts, and source grounding rather than fine-tuning. Augmentation is handled inside CRAG via query rewriting and domain-specific terminology expansion. The main parameters we tune are the routing confidence threshold, the lexical-router threshold, top-k retrieval, and a hard cap of two query-rewrite attempts."
+> "For the language model, we use **Gemini 2.5 Flash** as the primary, with **Gemma 3 12B** as a local failover when the API isn't reachable. The same active model handles supervisor routing, document grading, query rewriting, synthesis, fallback, and final response generation."
 
-*If your slide still says Gemma 2 9B Instruct,* lead with: "The slide lists Gemma 2 9B but in the final implementation we moved to Gemini 2.5 Flash with Gemma 3 as a local failover, for stronger structured-output reliability. Everything else on this slide is accurate."
+> "Routing actually happens in **two tiers**. The first tier is a lightweight **text classifier** — a lexical, keyword-based pre-router — that handles obvious queries without paying for an LLM call. If the lexical signal is confident enough, the query is routed immediately. Only ambiguous or low-margin queries escalate to the **LLM-based supervisor**, which performs zero-shot classification and produces a confidence score plus a second-choice domain. That two-tier setup is a pure cost and latency win — the LLM still arbitrates on hard cases."
 
-*Q&A note:* be ready to defend Gemini Flash vs. alternatives — see Q&A prep below.
+> "For embeddings, **GTE-Large** with 1024-dimensional vectors. The vector store is **ChromaDB**, with separate collections per domain."
+
+> "We do **not fine-tune any model**. Reliability comes from retrieval grading, domain-specific prompts, and source grounding — not from training. Augmentation is handled inside CRAG, via query rewriting and domain-specific terminology expansion."
+
+> "The main parameters we tune are the **routing confidence threshold** (when to trust the LLM supervisor), the **lexical-router threshold** (when to skip the LLM entirely), **top-k retrieval**, and a hard cap of **two query-rewrite attempts**."
+
+*Pacing tips:*
+- The two-tier routing beat is the most differentiating thing on this slide — slow down on it.
+- Frame the lexical pre-router as a *cost optimization*, not a capability change. It doesn't make the system smarter — it makes it cheaper.
+- "We do not fine-tune any model" is a deliberate design choice, not a limitation. Say it that way.
+
+*Q&A note:* the most likely follow-up is "is the lexical classifier learned or rule-based?" — be ready to say it's keyword/lexical (not learned), and that the optional fine-tuning notebook explores a DistilBERT-based learned classifier as a future extension.
 
 ---
 
@@ -145,19 +156,31 @@ _**Speaker assignment:** Dhruv presents slides 1–8. Rosh presents slides 9–1
 
 ## Slide 13 — Outcomes and Findings
 
-**Speaker: Rosh** · ~70s
+**Speaker: Rosh** · ~80s
 
-> "Our hypothesis — and what we expect from this design — is that the multi-agent system outperforms the monolithic baseline on all four metrics. Higher routing accuracy because the supervisor sends queries to the correct domain agent. Better retrieval precision because each domain has its own isolated knowledge base. Lower hallucination because CRAG grades retrieved documents before generation. And higher task completion because weak retrievals get rewritten and retried, synthesis handles cross-domain questions correctly, and fallback handles out-of-scope queries safely instead of failing silently. The main expected finding is that domain specialization plus corrective retrieval leads to more reliable NLP responses — architecture matters as much as model choice."
+> "Our hypothesis — and what we expect from this design — is that the multi-agent system outperforms the monolithic baseline on all four metrics. Higher routing accuracy because the supervisor sends queries to the correct domain agent. Better retrieval precision because each domain has its own isolated knowledge base. Lower hallucination because CRAG grades retrieved documents before generation. And higher task completion because weak retrievals get rewritten and retried, synthesis handles cross-domain questions correctly, and fallback handles out-of-scope queries safely instead of failing silently."
+
+> "The main expected finding is that domain specialization plus corrective retrieval leads to more reliable NLP responses — architecture matters as much as model choice."
+
+> "And the forward-looking implication: the same architecture is **designed to extend to a multi-turn task-completion agent**. Supervisor routing, tool use, retry, and fallback are exactly the substrate that task-oriented agents are built on. Adding a planning layer and stateful execution on top is the natural next step — and that's our main future work."
 
 *Frame as expectations / hypotheses if you haven't run the full benchmark — don't overclaim.*
+
+*Pacing tip:* the forward-looking line is your transition into slide 14 (Lessons Learned), so deliver it as a setup, not a closing flourish.
 
 ---
 
 ## Slide 14 — Lessons Learned and Perspectives
 
-**Speaker: Rosh** · ~60s
+**Speaker: Rosh** · ~75s
 
-> "A few takeaways. A strong language model alone isn't enough — architecture does real work. Domain-specific preprocessing is underrated; preserving technical terms and structuring recipe and paper metadata measurably improves retrieval. Routing isn't just classification — knowing when to clarify, when to synthesize, and when to fall back to web search is part of the design. CRAG adds value by reducing weak retrieval and unsupported responses, but every correction step adds latency, so there's a real accuracy-versus-speed tradeoff. Looking forward: more domains, latency optimization, better-calibrated routing thresholds, and broader evaluation with real-world queries beyond the curated test set."
+> "A few takeaways. A strong language model alone isn't enough — architecture does real work. Domain-specific preprocessing is underrated; preserving technical terms and structuring recipe and paper metadata measurably improves retrieval. CRAG adds value by reducing weak retrieval and unsupported responses, but every correction step adds latency, so there's a real accuracy-versus-speed tradeoff."
+
+> "The bigger takeaway is that **this architecture is a reusable substrate for agentic systems, not just RAG**. Supervisor routing, tool use, retry, and fallback are the same primitives that task-oriented agents are built on."
+
+> "That shapes our future-work list. **The headline future improvement is extending to a multi-turn task-completion agent** — adding a planning layer and stateful execution on top of the existing supervisor / specialists / CRAG / fallback substrate. Concrete examples: a diagnose-then-guide-fix loop for industrial troubleshooting, or multi-meal recipe planning with constraint tracking. Beyond that: more domains, latency optimization, better-calibrated routing thresholds, and broader real-world evaluation beyond the curated 150-query set."
+
+*Pacing tip:* land the "reusable substrate for agentic systems" sentence cleanly — it's your strongest forward-looking claim and pre-empts the natural reviewer question of "what's next."
 
 ---
 
@@ -177,15 +200,13 @@ _**Speaker assignment:** Dhruv presents slides 1–8. Rosh presents slides 9–1
 
 > "That's the architecture and the evaluation plan. Let's actually run it. I'll show one clean query per specialist domain — industrial, recipe, scientific — and one ambiguous query that triggers a clarification. If we have time, I'll also show a cross-domain query that triggers synthesis and an out-of-scope query that triggers web fallback. Watch the supervisor routing decision and the source attribution — those are where you can see the architecture working in real time."
 
-**Demo checklist** (pre-test all of these before presenting):
+**Full demo script:** see `AI574_Demo_Script.md` for the timed 5-minute walkthrough with verbatim narration, recovery scripts, and pre-demo checklist.
 
-- One clear industrial query (fault code or PLC question)
-- One clear recipe query (substitution or technique)
-- One clear scientific query (paper summarization)
-- One ambiguous query that should trigger `clarify`
-- *(Stretch)* a cross-domain query that triggers `synthesis`
-- *(Stretch)* an out-of-scope query that triggers `web fallback`
-- *(Optional)* a query that exercises CRAG's rewrite loop
+**Quick demo plan (5 min):**
+1. **Industrial specialist** (50s) — fault code F0003, shows lexical fast-path
+2. **Cross-domain → Synthesis** (1:20) — keto research + low-carb recipes, the showstopper
+3. **Out-of-scope → Web fallback** (55s) — "Who won the 2024 Super Bowl?"
+4. **Ambiguous → Clarify** (50s) — "How do I calibrate my oven thermometer?"
 
 ---
 
@@ -196,7 +217,9 @@ _**Speaker assignment:** Dhruv presents slides 1–8. Rosh presents slides 9–1
 | "Did you train any model?" | No — held all model weights fixed so any measured difference comes from the architecture, not model quality. |
 | "Why not just fine-tune?" | Would conflate architecture effect with model-quality effect. Holding the model fixed isolates the architectural contribution. |
 | "What if the supervisor misroutes?" | Three defenses: low-confidence routes go to clarify; out-of-scope routes go to web fallback; weak retrievals get graded and rewritten. |
-| "Is the supervisor a trained classifier?" | LLM-based with a structured JSON prompt — uses confidence to decide between specialist routing, clarification, synthesis, or fallback. |
+| "Is the supervisor a trained classifier?" | Two-tier. First tier is a lightweight lexical text classifier (keyword-based, not learned) that handles obvious queries cheaply. Second tier is an LLM-based zero-shot classifier with a structured JSON prompt — used when the lexical signal is low-confidence. |
+| "Did you train the lexical classifier?" | No — it's rule/keyword based. A learned DistilBERT version is in the optional fine-tuning extension, not the core system. |
+| "Could this become a task-completion agent?" | Yes — that's the planned future direction. The supervisor / specialist / CRAG / fallback layers are the substrate that task-oriented agents are built on (same primitives as AutoGen, LangGraph). The missing piece is a planning layer and stateful execution — natural next step, not implemented in this submission. |
 | "How realistic is your test set?" | 150 stratified queries with routine, ambiguous, and adversarial wording. Useful for controlled comparison; broader real-user eval is future work. |
 | "What about cross-domain queries?" | Synthesis route — runs CRAG against multiple specialists and fuses outputs with per-domain attribution. |
 | "What about out-of-scope queries?" | Web-search fallback (Tavily / DDGS) rather than forcing the query into the wrong corpus. |
